@@ -1461,7 +1461,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.3"
+#define LAV_VERSION L"1.4"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -1865,7 +1865,8 @@ static int ver_cmp(const wchar_t *a, const wchar_t *b) {
     }
 }
 static int app_remote_version(wchar_t *out) {                          /* version publiee dans le depot */
-    char b[96]; out[0] = 0; if (!http_get_text(APP_VER_URL, b, sizeof b)) return 0;
+    char b[96], url[200]; out[0] = 0; snprintf(url, sizeof url, "%s?t=%lu", APP_VER_URL, (unsigned long)GetTickCount());   /* evite le cache de GitHub (5 min) */
+    if (!http_get_text(url, b, sizeof b)) return 0;
     int n = 0; for (char *p = b; *p && n < 30; p++) { if ((*p >= '0' && *p <= '9') || *p == '.') out[n++] = (wchar_t)*p; else if (n) break; }
     out[n] = 0; return n > 0;
 }
@@ -1878,7 +1879,7 @@ static int app_swap(HWND owner, const wchar_t *newExe) {              /* remplac
 }
 static int app_install_online(HWND owner) {                           /* telecharge lecteur.exe depuis GitHub puis l'installe */
     wchar_t tmp[MAX_PATH], f[MAX_PATH]; GetTempPathW(MAX_PATH, tmp); _snwprintf(f, MAX_PATH - 1, L"%slav_new_%lu.exe", tmp, GetTickCount()); f[MAX_PATH - 1] = 0;
-    HCURSOR old = SetCursor(LoadCursor(NULL, IDC_WAIT)); ffAbort = 0; int ok = http_download(APP_EXE_URL, f, NULL, L"Lecteur A/V"); SetCursor(old);
+    HCURSOR old = SetCursor(LoadCursor(NULL, IDC_WAIT)); ffAbort = 0; wchar_t eu[260]; _snwprintf(eu, 259, L"%s?t=%lu", APP_EXE_URL, (unsigned long)GetTickCount()); eu[259] = 0; int ok = http_download(eu, f, NULL, L"Lecteur A/V"); SetCursor(old);
     WIN32_FILE_ATTRIBUTE_DATA fa; unsigned char mz[2] = { 0, 0 }; DWORD rd = 0;
     if (ok) { HANDLE hf = CreateFileW(f, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL); if (hf != INVALID_HANDLE_VALUE) { ReadFile(hf, mz, 2, &rd, NULL); CloseHandle(hf); } }
     if (!ok || !GetFileAttributesExW(f, GetFileExInfoStandard, &fa) || fa.nFileSizeLow < 100000 || mz[0] != 'M' || mz[1] != 'Z') {
