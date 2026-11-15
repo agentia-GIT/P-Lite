@@ -771,7 +771,7 @@ static int ask_entry(const wchar_t *ttl, const wchar_t *l1, const wchar_t *l2, c
     }
     HWND oh_ = dlgOwner ? dlgOwner : hMain;
     dlgState = 0; dlgName[0] = dlgUrl[0] = 0;
-    hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME, L"LavDlg", L"Ajouter une chaîne IPTV", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+    hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME, L"LavDlg", ttl ? ttl : L"Ajouter une chaîne IPTV", WS_POPUP | WS_CAPTION | WS_SYSMENU,
                            0, 0, 300, 200, oh_, NULL, hInst, NULL);
     int cw = S(520), ch = S(212);
     RECT wr, cr; GetWindowRect(hDlg, &wr); GetClientRect(hDlg, &cr);
@@ -782,13 +782,13 @@ static int ask_entry(const wchar_t *ttl, const wchar_t *l1, const wchar_t *l2, c
     if (dwm) { HRESULT (WINAPI *f)(HWND, DWORD, LPCVOID, DWORD) = (void *)GetProcAddress(dwm, "DwmSetWindowAttribute");
                if (f) { f(hDlg, 20, &dark, sizeof dark); f(hDlg, 19, &dark, sizeof dark); } }
     HWND c;
-    c = CreateWindowExW(0, L"STATIC", L"Nom de la chaîne", WS_CHILD | WS_VISIBLE, S(16), S(12), S(480), S(18), hDlg, NULL, hInst, NULL); SendMessage(c, WM_SETFONT, (WPARAM)fUI, 1);
+    c = CreateWindowExW(0, L"STATIC", l1 ? l1 : L"Nom de la chaîne", WS_CHILD | WS_VISIBLE, S(16), S(12), S(480), S(18), hDlg, NULL, hInst, NULL); SendMessage(c, WM_SETFONT, (WPARAM)fUI, 1);
     hEdName = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, S(16), S(34), S(488), S(26), hDlg, (HMENU)ID_NAME, hInst, NULL); SendMessage(hEdName, WM_SETFONT, (WPARAM)fUI, 1);
-    c = CreateWindowExW(0, L"STATIC", L"Adresse du flux  (http, https, rtmp, rtsp, udp, m3u8, playlist .m3u…)", WS_CHILD | WS_VISIBLE, S(16), S(72), S(488), S(18), hDlg, NULL, hInst, NULL); SendMessage(c, WM_SETFONT, (WPARAM)fUI, 1);
+    c = CreateWindowExW(0, L"STATIC", l2 ? l2 : L"Adresse du flux", WS_CHILD | WS_VISIBLE, S(16), S(72), S(488), S(18), hDlg, NULL, hInst, NULL); SendMessage(c, WM_SETFONT, (WPARAM)fUI, 1);
     hEdUrl = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, S(16), S(94), S(488), S(26), hDlg, (HMENU)ID_URL, hInst, NULL); SendMessage(hEdUrl, WM_SETFONT, (WPARAM)fUI, 1);
     if (dlgShowMusic) CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, S(16), S(128), S(488), S(28), hDlg, (HMENU)90, hInst, NULL);
     else {
-    c = CreateWindowExW(0, L"STATIC", L"Enregistrée dans le dossier iptv, puis lue immédiatement.", WS_CHILD | WS_VISIBLE, S(16), S(132), S(488), S(18), hDlg, NULL, hInst, NULL); SendMessage(c, WM_SETFONT, (WPARAM)fSmall, 1);
+    c = CreateWindowExW(0, L"STATIC", hint ? hint : L"", WS_CHILD | WS_VISIBLE, S(16), S(132), S(488), S(18), hDlg, NULL, hInst, NULL); SendMessage(c, WM_SETFONT, (WPARAM)fSmall, 1);
     }
     c = CreateWindowExW(0, L"BUTTON", okt, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, S(298), S(166), S(100), S(30), hDlg, (HMENU)IDOK, hInst, NULL);
     c = CreateWindowExW(0, L"BUTTON", L"Annuler", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, S(404), S(166), S(100), S(30), hDlg, (HMENU)IDCANCEL, hInst, NULL);
@@ -1479,7 +1479,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.5"
+#define LAV_VERSION L"1.6"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -2121,7 +2121,9 @@ static int install_window(int needMpv, int needFf, int ask) {
 #ifndef WDA_EXCLUDEFROMCAPTURE
 #define WDA_EXCLUDEFROMCAPTURE 0x11
 #endif
-enum { CM_SCREEN, CM_ZONE, CM_WINDOW };
+enum { CM_SCREEN, CM_ZONE, CM_WINDOW, CM_CAMERA };
+static wchar_t camDev[160], camUrl[900], camName[120]; static int camType, camSize;       /* camera : peripherique local (DirectShow) ou flux IP */
+static const wchar_t *CAM_SZ[4] = { L"", L"640x480", L"1280x720", L"1920x1080" };
 typedef struct { int mode, crf, fps, abr, speed, audio, cursor, fmt, syncMs, hasZone; RECT zone; wchar_t outdir[MAX_PATH]; } CapCfg;
 static CapCfg cc = { CM_SCREEN, 26, 30, 160, 1, 1, 1, 0, 0, 0, { 0, 0, 0, 0 }, L"" };
 static HWND hCap, capWin, hZone;
@@ -2149,7 +2151,9 @@ static void desktop_dir(wchar_t *o) { if (FAILED(SHGetFolderPathW(NULL, CSIDL_DE
 
 static void cap_load(void) {
     wchar_t p[MAX_PATH]; cap_ini_path(p);
-    cc.mode = clampi(ini_i(L"mode", 0), 0, 2);
+    cc.mode = clampi(ini_i(L"mode", 0), 0, 3);
+    camType = ini_i(L"cam_type", 0) ? 1 : 0; camSize = clampi(ini_i(L"cam_taille", 0), 0, 3);
+    GetPrivateProfileStringW(L"capture", L"cam_peripherique", L"", camDev, 160, p); GetPrivateProfileStringW(L"capture", L"cam_url", L"", camUrl, 900, p); GetPrivateProfileStringW(L"capture", L"cam_nom", L"", camName, 120, p);
     cc.crf = clampi(ini_i(L"crf", 26), 18, 34);
     cc.fps = clampi((ini_i(L"fps", 30) + 2) / 5 * 5, 10, 60);
     cc.abr = clampi(ini_i(L"audio_kbps", 160) / 16 * 16, 64, 320);
@@ -2167,6 +2171,8 @@ static void cap_save(void) {
     ini_si(L"mode", cc.mode); ini_si(L"crf", cc.crf); ini_si(L"fps", cc.fps); ini_si(L"audio_kbps", cc.abr); ini_si(L"vitesse", cc.speed);
     ini_si(L"son_pc", cc.audio); ini_si(L"curseur", cc.cursor); ini_si(L"format", cc.fmt); ini_si(L"decalage_audio_ms", cc.syncMs);
     ini_si(L"zone_ok", cc.hasZone); ini_si(L"zone_g", cc.zone.left); ini_si(L"zone_h", cc.zone.top); ini_si(L"zone_d", cc.zone.right); ini_si(L"zone_b", cc.zone.bottom);
+    ini_si(L"cam_type", camType); ini_si(L"cam_taille", camSize);
+    WritePrivateProfileStringW(L"capture", L"cam_peripherique", camDev, p); WritePrivateProfileStringW(L"capture", L"cam_url", camUrl, p); WritePrivateProfileStringW(L"capture", L"cam_nom", camName, p);
     WritePrivateProfileStringW(L"capture", L"dossier", cc.outdir, p);
 }
 
@@ -2201,6 +2207,7 @@ static BOOL CALLBACK win_cb(HWND h, LPARAM lp) {
 }
 
 static int cap_region(RECT *o, wchar_t *err) {
+    if (cc.mode == CM_CAMERA) { SetRectEmpty(o); return 1; }
     RECT v, r; v.left = GetSystemMetrics(SM_XVIRTUALSCREEN); v.top = GetSystemMetrics(SM_YVIRTUALSCREEN);
     v.right = v.left + GetSystemMetrics(SM_CXVIRTUALSCREEN); v.bottom = v.top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
     if (cc.mode == CM_SCREEN) { mons_refresh(); r = (capMon > 0 && capMon <= nMons) ? mons[capMon - 1].r : v; }
@@ -2402,6 +2409,7 @@ static void cap_start(void) {
     RECT rg; int useAudio = cc.audio;
     if (!csInit) { InitializeCriticalSection(&csErr); csInit = 1; }
     if (!ff_present()) { cap_set_status(L"FFmpeg introuvable dans le dossier codec (Paramètres > FFmpeg).", C_RED); return; }
+    if (cc.mode == CM_CAMERA && ((camType == 0 && !camDev[0]) || (camType == 1 && !camUrl[0]))) { cap_set_status(L"Choisissez d'abord une caméra (locale ou IP).", C_RED); return; }
     if (!cap_region(&rg, err)) { cap_set_status(err, C_RED); return; }
     if (!dir_exists(cc.outdir) && !CreateDirectoryW(cc.outdir, NULL)) desktop_dir(cc.outdir);
     SYSTEMTIME st; GetLocalTime(&st);
@@ -2429,12 +2437,20 @@ static void cap_start(void) {
         _snwprintf(aout, 119, L"-c:a aac -b:a %dk -ac 2 -ar 48000 ", cc.abr); aout[119] = 0;
     }
     ff_path(ffp); ff_dpi_shim(ffp);
+    wchar_t vin[1500], vf[80] = L"";
+    if (cc.mode == CM_CAMERA) {
+        wcscpy(vf, L"-vf scale=trunc(iw/2)*2:trunc(ih/2)*2 ");                                 /* dimensions paires pour yuv420p */
+        if (camType == 0) _snwprintf(vin, 1499, L"-thread_queue_size 1024 -f dshow -rtbufsize 256M -framerate %d %s%s%s-i video=\"%s\" ", cc.fps,
+                                     camSize ? L"-video_size " : L"", camSize ? CAM_SZ[camSize] : L"", camSize ? L" " : L"", camDev);
+        else _snwprintf(vin, 1499, L"-thread_queue_size 1024 %s-use_wallclock_as_timestamps 1 -i \"%s\" ", !_wcsnicmp(camUrl, L"rtsp", 4) ? L"-rtsp_transport tcp " : L"", camUrl);
+    } else
+        _snwprintf(vin, 1499, L"-thread_queue_size 1024 -f gdigrab -framerate %d -draw_mouse %d -offset_x %d -offset_y %d -video_size %dx%d -rtbufsize 256M -i desktop ",
+                   cc.fps, cc.cursor ? 1 : 0, (int)rg.left, (int)rg.top, (int)(rg.right - rg.left), (int)(rg.bottom - rg.top));
+    vin[1499] = 0;
     _snwprintf(cl, 3999,
-        L"\"%s\" -hide_banner -y -loglevel warning -nostats %s"
-        L"-thread_queue_size 1024 -f gdigrab -framerate %d -draw_mouse %d -offset_x %d -offset_y %d -video_size %dx%d -rtbufsize 256M -i desktop "
-        L"-map %d:v %s-c:v libx265 -preset %s -crf %d -pix_fmt yuv420p -x265-params log-level=error %s-fps_mode cfr -r %d %s\"%s\"",
-        ffp, ain, cc.fps, cc.cursor ? 1 : 0, (int)rg.left, (int)rg.top, (int)(rg.right - rg.left), (int)(rg.bottom - rg.top),
-        useAudio ? 1 : 0, useAudio ? L"-map 0:a " : L"", PRE[cc.speed], cc.crf, cc.fmt ? L"-tag:v hvc1 " : L"", cc.fps, aout, capCurOut);
+        L"\"%s\" -hide_banner -y -loglevel warning -nostats %s%s"
+        L"-map %d:v %s%s-c:v libx265 -preset %s -crf %d -pix_fmt yuv420p -x265-params log-level=error %s-fps_mode cfr -r %d %s\"%s\"",
+        ffp, ain, vin, useAudio ? 1 : 0, useAudio ? L"-map 0:a " : L"", vf, PRE[cc.speed], cc.crf, cc.fmt ? L"-tag:v hvc1 " : L"", cc.fps, aout, capCurOut);
     cl[3999] = 0;
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE }; HANDLE inR = NULL, inW = NULL, erR = NULL, erW = NULL;
     if (!CreatePipe(&inR, &inW, &sa, 0) || !CreatePipe(&erR, &erW, &sa, 0)) { cap_set_status(L"Impossible de créer les tubes de communication.", C_RED); audio_stop(); cap_free_events(); return; }
@@ -2502,7 +2518,7 @@ static void cap_shutdown(void) {              /* fermeture du lecteur pendant un
 }
 
 /* ----- fenetre de capture (dessinee a la main, style du lecteur) ----- */
-enum { R_M0, R_M1, R_M2, R_TARGET, R_ZONE, R_S0, R_S1, R_S2, R_S3, R_AUD, R_CUR, R_MKV, R_MP4, R_OUT, R_BROWSE, R_DESK, R_REC, R_OPEN, R_PLAY, R_CLOSE, R_N };
+enum { R_M0, R_M1, R_M2, R_M3, R_TARGET, R_ZONE, R_S0, R_S1, R_S2, R_S3, R_AUD, R_CUR, R_MKV, R_MP4, R_OUT, R_BROWSE, R_DESK, R_REC, R_OPEN, R_PLAY, R_CLOSE, R_N };
 static RECT capR[R_N];
 #define CAP_W 640
 #define CAP_H 568
@@ -2526,8 +2542,8 @@ static void sld_set(int k, int x) {
 }
 
 static void cap_layout(void) {
-    int W = S(CAP_W), pad = S(22), g = S(6), x0 = pad, x1 = W - pad, y, tw = (x1 - x0 - 2 * g) / 3;
-    for (int i = 0; i < 3; i++) SetRect(&capR[R_M0 + i], x0 + i * (tw + g), S(38), x0 + i * (tw + g) + tw, S(74));
+    int W = S(CAP_W), pad = S(22), g = S(6), x0 = pad, x1 = W - pad, y, tw = (x1 - x0 - 3 * g) / 4;
+    for (int i = 0; i < 4; i++) SetRect(&capR[R_M0 + i], x0 + i * (tw + g), S(38), x0 + i * (tw + g) + tw, S(74));
     y = S(84);
     if (cc.mode == CM_ZONE) { SetRect(&capR[R_TARGET], x0, y, x1 - S(156), y + S(34)); SetRect(&capR[R_ZONE], x1 - S(150), y, x1, y + S(34)); }
     else { SetRect(&capR[R_TARGET], x0, y, x1, y + S(34)); SetRectEmpty(&capR[R_ZONE]); }
@@ -2555,6 +2571,13 @@ static int cap_target_text(wchar_t *o) {                  /* renvoie 1 si c'est 
         if (!cc.hasZone) { wcscpy(o, L"Aucune zone — cliquez sur « Choisir la zone… »"); return 1; }
         _snwprintf(o, 199, L"Zone : %d × %d px   à (%d, %d)", (int)(cc.zone.right - cc.zone.left), (int)(cc.zone.bottom - cc.zone.top), (int)cc.zone.left, (int)cc.zone.top); o[199] = 0; return 0;
     }
+    if (cc.mode == CM_CAMERA) {
+        if (camType == 0) { if (!camDev[0]) { wcscpy(o, L"Choisir une caméra…"); return 1; } _snwprintf(o, 199, L"Caméra locale : %s", camDev); o[199] = 0; return 0; }
+        if (!camUrl[0]) { wcscpy(o, L"Choisir une caméra…"); return 1; }
+        { const wchar_t *u = camUrl, *sc = wcsstr(u, L"://"), *at = sc ? wcschr(sc + 3, L'@') : NULL, *sl = sc ? wcschr(sc + 3, L'/') : NULL;   /* identifiants masques */
+          if (at && (!sl || at < sl)) u = at + 1; else if (sc) u = sc + 3;
+          if (camName[0]) _snwprintf(o, 199, L"Caméra IP : %s  (%s)", camName, u); else _snwprintf(o, 199, L"Caméra IP : %s", u); o[199] = 0; return 0; }
+    }
     if (capWin && IsWindow(capWin)) { GetWindowTextW(capWin, o, 190); return 0; }
     wcscpy(o, L"Choisir une fenêtre…"); return 1;
 }
@@ -2580,8 +2603,8 @@ static void cap_paint(HDC dc, int W, int H) {
     RECT all = { 0, 0, W, H }; fill(dc, &all, C_BAR); cap_layout();
     int busy = capRunning, pad = S(22); RECT t; wchar_t b[260];
     SetRect(&t, pad, S(14), W - pad, S(34)); text(dc, L"SOURCE", &t, C_DIM, fSmall, DT_LEFT);
-    const wchar_t *mn[3] = { L"Écran", L"Zone libre", L"Fenêtre" };
-    for (int i = 0; i < 3; i++) cap_tog(dc, R_M0 + i, mn[i], cc.mode == i, 0, busy);
+    const wchar_t *mn[4] = { L"Écran", L"Zone libre", L"Fenêtre", L"Caméra" };
+    for (int i = 0; i < 4; i++) cap_tog(dc, R_M0 + i, mn[i], cc.mode == i, 0, busy);
     int dim = cap_target_text(b);
     if (cc.mode == CM_ZONE) { cap_chip(dc, R_TARGET, b, dim, busy, 0); cap_tog(dc, R_ZONE, L"Choisir la zone…", 0, 0, busy); }
     else cap_chip(dc, R_TARGET, b, dim, busy, 1);
@@ -2593,7 +2616,7 @@ static void cap_paint(HDC dc, int W, int H) {
         bar(dc, &tr, f, busy ? C_DIM : C_ACC, S(3), S(6));
         sld_text(k, b); text(dc, b, &vl, busy ? C_DIM : C_ACC, fUI, DT_LEFT | DT_END_ELLIPSIS);
     }
-    cap_tog(dc, R_AUD, L"Son du PC", cc.audio, 1, busy); cap_tog(dc, R_CUR, L"Curseur souris", cc.cursor, 1, busy);
+    cap_tog(dc, R_AUD, L"Son du PC", cc.audio, 1, busy); cap_tog(dc, R_CUR, L"Curseur souris", cc.cursor, 1, busy || cc.mode == CM_CAMERA);
     cap_tog(dc, R_MKV, L"MKV", !cc.fmt, 0, busy); cap_tog(dc, R_MP4, L"MP4", cc.fmt, 0, busy);
     SetRect(&t, pad, S(378), W - pad, S(398)); text(dc, L"DOSSIER DE SORTIE", &t, C_DIM, fSmall, DT_LEFT);
     cap_chip(dc, R_OUT, cc.outdir, 0, busy, 0); cap_tog(dc, R_BROWSE, L"Parcourir…", 0, 0, busy); cap_tog(dc, R_DESK, L"Bureau", 0, 0, busy);
@@ -2630,6 +2653,50 @@ static void cap_window_menu(void) {
     int c = TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, p.x, p.y, 0, hCap, NULL); DestroyMenu(m);
     if (c >= 200 && c < 200 + nWl) capWin = wl[c - 200].h;
 }
+/* ----- camera : peripheriques locaux (DirectShow, via ffmpeg) ou flux IP ----- */
+static struct { wchar_t n[120]; } camL[16]; static int nCam;
+static int cam_list(void) {
+    wchar_t ffp[MAX_PATH], cl[MAX_PATH + 140]; static char out[16000]; nCam = 0; ff_path(ffp);
+    _snwprintf(cl, MAX_PATH + 139, L"\"%s\" -hide_banner -list_devices true -f dshow -i dummy", ffp); cl[MAX_PATH + 139] = 0;
+    HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT)); run_capture(cl, out, sizeof out, 9000); SetCursor(oc);
+    int inVideo = 0; char *p = out;
+    while (*p && nCam < 16) {
+        char *e = strchr(p, '\n'); size_t len = e ? (size_t)(e - p) : strlen(p); char line[400]; if (len > 399) len = 399; memcpy(line, p, len); line[len] = 0;
+        p = e ? e + 1 : p + strlen(p);
+        if (strstr(line, "DirectShow video devices")) { inVideo = 1; continue; }
+        if (strstr(line, "DirectShow audio devices")) { inVideo = 0; continue; }
+        if (strstr(line, "Alternative name")) continue;
+        char *q1 = strchr(line, '"'); if (!q1) continue;
+        int isVid = strstr(line, "(video)") != NULL || (inVideo && !strstr(line, "(audio)")); if (!isVid) continue;
+        char *q2 = strchr(q1 + 1, '"'); if (!q2) continue; *q2 = 0;
+        wchar_t w[120]; u8w(q1 + 1, w, 120); int dup = 0; for (int i = 0; i < nCam; i++) if (!wcscmp(camL[i].n, w)) dup = 1;
+        if (!dup && !wcschr(w, L'"')) wcscpy(camL[nCam++].n, w);
+    }
+    return nCam;
+}
+static void cap_camera_menu(void) {
+    cam_list(); HMENU m = CreatePopupMenu(), sz = CreatePopupMenu();
+    if (!nCam) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Aucune caméra locale détectée");
+    for (int i = 0; i < nCam; i++) { wchar_t e[130]; esc_amp(camL[i].n, e, 130); AppendMenuW(m, MF_STRING | (camType == 0 && !wcscmp(camDev, camL[i].n) ? MF_CHECKED : 0), 500 + i, e); }
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING | (camType == 1 && camUrl[0] ? MF_CHECKED : 0), 490, L"Caméra IP / réseau (adresse)…");
+    for (int i = 0; i < 4; i++) AppendMenuW(sz, MF_STRING | (camSize == i ? MF_CHECKED : 0), 480 + i, i ? CAM_SZ[i] : L"Automatique");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)sz, L"Résolution (caméra locale)");
+    POINT p = { capR[R_TARGET].left, capR[R_TARGET].bottom }; ClientToScreen(hCap, &p);
+    int c = TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, p.x, p.y, 0, hCap, NULL); DestroyMenu(m);
+    if (c >= 500 && c < 500 + nCam) { wcscpy(camDev, camL[c - 500].n); camType = 0; cap_save(); }
+    else if (c >= 480 && c <= 483) { camSize = c - 480; cap_save(); }
+    else if (c == 490) {
+        dlgOwner = hCap; wcscpy(dlgPreName, camName); wcscpy(dlgPreUrl, camUrl);
+        int ok = ask_entry(L"Caméra IP / réseau", L"Nom de la caméra  (facultatif)", L"Adresse du flux  (rtsp://utilisateur:mot_de_passe@192.168.1.20:554/flux, http://…/video, rtmp://…)",
+                           L"Les identifiants éventuels sont enregistrés dans capture.ini.", L"Utiliser");
+        dlgOwner = NULL;
+        if (ok && dlgUrl[0]) {
+            if (wcschr(dlgUrl, L'"')) MessageBoxW(hCap, L"L'adresse ne doit pas contenir de guillemets.", L"Capture", MB_ICONERROR);
+            else { wcsncpy(camUrl, dlgUrl, 899); camUrl[899] = 0; wcsncpy(camName, dlgName, 119); camName[119] = 0; camType = 1; cap_save(); }
+        }
+    }
+}
 static void cap_browse(void) {
     BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = hCap; bi.lpszTitle = L"Dossier de sortie des captures"; bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
     LPITEMIDLIST pl = SHBrowseForFolderW(&bi);
@@ -2655,12 +2722,12 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         int locked = capRunning && id != R_REC && id != R_CLOSE;
         if (locked) return 0;
         switch (id) {
-        case R_M0: case R_M1: case R_M2: cc.mode = id - R_M0; cap_save(); break;
-        case R_TARGET: if (cc.mode == CM_SCREEN) cap_screen_menu(); else if (cc.mode == CM_WINDOW) cap_window_menu(); else cap_pick_zone(); break;
+        case R_M0: case R_M1: case R_M2: case R_M3: cc.mode = id - R_M0; cap_save(); break;
+        case R_TARGET: if (cc.mode == CM_SCREEN) cap_screen_menu(); else if (cc.mode == CM_WINDOW) cap_window_menu(); else if (cc.mode == CM_CAMERA) cap_camera_menu(); else cap_pick_zone(); break;
         case R_ZONE: cap_pick_zone(); break;
         case R_S0: case R_S1: case R_S2: case R_S3: capDrag = id - R_S0; SetCapture(h); sld_set(capDrag, GET_X_LPARAM(lp)); break;
         case R_AUD: cc.audio = !cc.audio; cap_save(); break;
-        case R_CUR: cc.cursor = !cc.cursor; cap_save(); break;
+        case R_CUR: if (cc.mode != CM_CAMERA) { cc.cursor = !cc.cursor; cap_save(); } break;
         case R_MKV: cc.fmt = 0; cap_save(); break;
         case R_MP4: cc.fmt = 1; cap_save(); break;
         case R_OUT: case R_BROWSE: cap_browse(); break;
@@ -2701,7 +2768,7 @@ static void capture_window(void) {
     cap_load(); mons_refresh(); capStatus[0] = 0; capLast[0] = 0;
     DWORD st = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX; RECT r = { 0, 0, S(CAP_W), S(CAP_H) }; AdjustWindowRectEx(&r, st, FALSE, 0);
     RECT mr; GetWindowRect(hMain, &mr); int w = r.right - r.left, hh = r.bottom - r.top;
-    hCap = CreateWindowExW(0, L"LavCap", L"Capture écran", st, mr.left + ((mr.right - mr.left) - w) / 2, mr.top + ((mr.bottom - mr.top) - hh) / 2, w, hh, NULL, NULL, hInst, NULL);
+    hCap = CreateWindowExW(0, L"LavCap", L"Capture écran / caméra", st, mr.left + ((mr.right - mr.left) - w) / 2, mr.top + ((mr.bottom - mr.top) - hh) / 2, w, hh, NULL, NULL, hInst, NULL);
     BOOL dark = TRUE; HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
     if (dwm) { HRESULT (WINAPI *f)(HWND, DWORD, LPCVOID, DWORD) = (void *)GetProcAddress(dwm, "DwmSetWindowAttribute"); if (f) { f(hCap, 20, &dark, sizeof dark); f(hCap, 19, &dark, sizeof dark); } }
     ShowWindow(hCap, SW_SHOW); SetForegroundWindow(hCap);
