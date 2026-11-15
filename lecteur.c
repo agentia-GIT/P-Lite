@@ -54,6 +54,7 @@ static HMODULE gDll; static wchar_t gDllPath[MAX_PATH];
 #define WM_LAV_ESC    (WM_APP + 3)
 #define WM_LAV_TRACKS (WM_APP + 4)
 #define WM_LAV_OPEN   (WM_APP + 5)
+#define WM_LAV_NEWVER (WM_APP + 30)
 
 #define C_BG    RGB(13, 15, 18)
 #define C_BAR   RGB(22, 25, 30)
@@ -1446,7 +1447,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.0"
+#define LAV_VERSION L"1.1"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -1836,6 +1837,50 @@ static int act_update_app(HWND owner) {
     return 1;
 }
 
+
+/* ---------- mise a jour de l'application depuis GitHub (agentia-GIT/P-Lite) ---------- */
+#define APP_VER_URL "https://raw.githubusercontent.com/agentia-GIT/P-Lite/main/version.txt"
+#define APP_EXE_URL L"https://raw.githubusercontent.com/agentia-GIT/P-Lite/main/lecteur.exe"
+static wchar_t gNewVer[32];
+static int ver_cmp(const wchar_t *a, const wchar_t *b) {
+    for (;;) {
+        while (*a && !iswdigit(*a)) a++; while (*b && !iswdigit(*b)) b++;
+        if (!*a && !*b) return 0;
+        long x = 0, y = 0; while (iswdigit(*a)) x = x * 10 + (*a++ - L'0'); while (iswdigit(*b)) y = y * 10 + (*b++ - L'0');
+        if (x != y) return x < y ? -1 : 1;
+    }
+}
+static int app_remote_version(wchar_t *out) {                          /* version publiee dans le depot */
+    char b[96]; out[0] = 0; if (!http_get_text(APP_VER_URL, b, sizeof b)) return 0;
+    int n = 0; for (char *p = b; *p && n < 30; p++) { if ((*p >= '0' && *p <= '9') || *p == '.') out[n++] = (wchar_t)*p; else if (n) break; }
+    out[n] = 0; return n > 0;
+}
+static int app_swap(HWND owner, const wchar_t *newExe) {              /* remplace lecteur.exe (l'ancien devient .old) */
+    wchar_t cur[MAX_PATH], bak[MAX_PATH]; GetModuleFileNameW(NULL, cur, MAX_PATH);
+    _snwprintf(bak, MAX_PATH - 1, L"%s.old", cur); bak[MAX_PATH - 1] = 0; DeleteFileW(bak);
+    if (!MoveFileExW(cur, bak, MOVEFILE_REPLACE_EXISTING)) { MessageBoxW(owner, L"Impossible de remplacer l'application (dossier protégé en écriture ?).", L"Mise à jour", MB_ICONERROR); return 0; }
+    if (!CopyFileW(newExe, cur, FALSE)) { MoveFileExW(bak, cur, MOVEFILE_REPLACE_EXISTING); MessageBoxW(owner, L"Installation impossible : l'ancienne version a été restaurée.", L"Mise à jour", MB_ICONERROR); return 0; }
+    ShellExecuteW(NULL, L"open", cur, NULL, NULL, SW_SHOWNORMAL); return 1;
+}
+static int app_install_online(HWND owner) {                           /* telecharge lecteur.exe depuis GitHub puis l'installe */
+    wchar_t tmp[MAX_PATH], f[MAX_PATH]; GetTempPathW(MAX_PATH, tmp); _snwprintf(f, MAX_PATH - 1, L"%slav_new_%lu.exe", tmp, GetTickCount()); f[MAX_PATH - 1] = 0;
+    HCURSOR old = SetCursor(LoadCursor(NULL, IDC_WAIT)); ffAbort = 0; int ok = http_download(APP_EXE_URL, f, NULL, L"Lecteur A/V"); SetCursor(old);
+    WIN32_FILE_ATTRIBUTE_DATA fa; unsigned char mz[2] = { 0, 0 }; DWORD rd = 0;
+    if (ok) { HANDLE hf = CreateFileW(f, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL); if (hf != INVALID_HANDLE_VALUE) { ReadFile(hf, mz, 2, &rd, NULL); CloseHandle(hf); } }
+    if (!ok || !GetFileAttributesExW(f, GetFileExInfoStandard, &fa) || fa.nFileSizeLow < 100000 || mz[0] != 'M' || mz[1] != 'Z') {
+        DeleteFileW(f); MessageBoxW(owner, L"Téléchargement de la nouvelle version impossible.", L"Mise à jour", MB_ICONERROR); return 0; }
+    int r = app_swap(owner, f); DeleteFileW(f); return r;
+}
+static void app_ini(wchar_t *p) { exe_dir(p); wcscat(p, L"\\capture.ini"); }
+static DWORD WINAPI app_check_thread(LPVOID p) {                       /* verification au demarrage */
+    (void)p; wchar_t v[32], ref[32] = L"", ip[MAX_PATH];
+    if (app_remote_version(v) && ver_cmp(LAV_VERSION, v) < 0) {
+        app_ini(ip); GetPrivateProfileStringW(L"capture", L"maj_refus", L"", ref, 32, ip);
+        if (wcscmp(ref, v)) { wcscpy(gNewVer, v); PostMessage(hMain, WM_LAV_NEWVER, 0, 0); }
+    }
+    return 0;
+}
+
 static LRESULT CALLBACK SetProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_CTLCOLORSTATIC: {
@@ -1859,6 +1904,14 @@ static LRESULT CALLBACK SetProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         switch (LOWORD(wp)) {
         case 430: if (!updRunning) { updMsg[0] = 0; CloseHandle(CreateThread(NULL, 0, update_thread, h, 0, NULL)); Sleep(20); set_refresh(); } break;
         case 431: { wchar_t e[MAX_PATH]; GetModuleFileNameW(NULL, e, MAX_PATH); ShellExecuteW(NULL, L"open", e, NULL, NULL, SW_SHOWNORMAL); setDone = 1; PostMessage(hMain, WM_CLOSE, 0, 0); } break;
+        case 434: { wchar_t v[32], t[160]; HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT)); int ok = app_remote_version(v); SetCursor(oc);
+            if (!ok) { SetWindowTextW(hsVal[0], LAV_VERSION); MessageBoxW(h, L"Impossible de joindre GitHub pour vérifier la version.", L"Mise à jour", MB_ICONINFORMATION); break; }
+            if (ver_cmp(LAV_VERSION, v) < 0) {
+                _snwprintf(t, 159, L"%s   —   version %s disponible", LAV_VERSION, v); t[159] = 0; SetWindowTextW(hsVal[0], t);
+                _snwprintf(t, 159, L"La version %s est disponible (vous avez la %s).\n\nL'installer maintenant ?\nVos listes et votre configuration sont conservées.", v, LAV_VERSION); t[159] = 0;
+                if (MessageBoxW(h, t, L"Mise à jour", MB_YESNO | MB_ICONQUESTION) == IDYES && app_install_online(h)) { setDone = 1; PostMessage(hMain, WM_CLOSE, 0, 0); }
+            } else { _snwprintf(t, 159, L"%s   —   à jour", LAV_VERSION); t[159] = 0; SetWindowTextW(hsVal[0], t); }
+        } break;
         case 433: if (!updRunning && !ffUpdRunning && !capRunning) { if (act_update_app(h)) { setDone = 1; PostMessage(hMain, WM_CLOSE, 0, 0); } } break;
         case 432: if (!ffUpdRunning && !capRunning) { ffMsg[0] = 0; CloseHandle(CreateThread(NULL, 0, ff_update_thread, h, 0, NULL)); Sleep(20); set_ff_refresh(); } break;
         case IDCANCEL: if (!updRunning && !ffUpdRunning) setDone = 1; break;
@@ -1909,6 +1962,8 @@ static void settings_window(void) {
     hsRestart = CreateWindowExW(0, L"BUTTON", L"Redémarrer", WS_CHILD | WS_TABSTOP | BS_OWNERDRAW, S(20), ch - S(12) - S(34), S(140), S(34), hSet, (HMENU)431, hInst, NULL);
     CreateWindowExW(0, L"BUTTON", L"Fermer", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, cw - S(12) - S(120), ch - S(12) - S(34), S(120), S(34), hSet, (HMENU)IDCANCEL, hInst, NULL);
     CreateWindowExW(0, L"BUTTON", L"Mettre \u00e0 jour depuis un zip\u2026", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, cw - S(12) - S(120) - S(12) - S(270), ch - S(12) - S(34), S(270), S(34), hSet, (HMENU)433, hInst, NULL);
+    SetWindowPos(hsVal[0], NULL, 0, 0, S(210), S(22), SWP_NOMOVE | SWP_NOZORDER);
+    CreateWindowExW(0, L"BUTTON", L"Vérifier les mises à jour", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, S(430), S(22) - S(4), S(190), S(30), hSet, (HMENU)434, hInst, NULL);
     statusClr = C_DIM;
     {   /* bibliotheque de capture : FFmpeg */
         const wchar_t *fl[3] = { L"Dossier codec", L"FFmpeg install\u00e9 (capture)", L"Derni\u00e8re version en ligne" };
@@ -3138,6 +3193,11 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_LAV_ESC: if (fullscreen) toggle_fs(); return 0;
     case WM_LAV_TRACKS: toggle_tracks(); return 0;
     case WM_LAV_OPEN: open_dialog(); return 0;
+    case WM_LAV_NEWVER: {
+        wchar_t t[200]; _snwprintf(t, 199, L"Une nouvelle version du lecteur est disponible : %s  (actuelle : %s).\n\nL'installer maintenant ?\nVos listes et votre configuration sont conservées.", gNewVer, LAV_VERSION); t[199] = 0;
+        if (MessageBoxW(h, t, L"Mise à jour", MB_YESNO | MB_ICONQUESTION) == IDYES) { if (app_install_online(h)) PostMessage(h, WM_CLOSE, 0, 0); }
+        else { wchar_t ip[MAX_PATH]; app_ini(ip); WritePrivateProfileStringW(L"capture", L"maj_refus", gNewVer, ip); }
+        return 0; }
     case WM_DROPFILES: { wchar_t f[2048]; if (DragQueryFileW((HDROP)wp, 0, f, 2048)) load_file(f); DragFinish((HDROP)wp); return 0; }
     case WM_DPICHANGED: {
         dpi = HIWORD(wp); make_fonts(); RECT *r = (RECT *)lp;
@@ -3274,7 +3334,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cl, int sw) {
 
     int argc; wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv && argc > 1) load_file(argv[1]);
-    else PostMessage(hMain, WM_LAV_OPEN, 0, 0);
+    CloseHandle(CreateThread(NULL, 0, app_check_thread, NULL, 0, NULL));   /* nouvelle version sur GitHub ? */
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessage(&msg); }
