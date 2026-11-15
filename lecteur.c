@@ -167,19 +167,29 @@ static void refresh_tracks(void) {
 static int panel_height(void) { return (tracksVisible ? S(34) : 0) + S(64); }
 
 static void place_viz(int w, int h) { if (hViz) SetWindowPos(hViz, HWND_TOP, 0, 0, w, h, SWP_NOACTIVATE | (vizOn ? SWP_SHOWWINDOW : SWP_HIDEWINDOW)); }
+static HWND hTab; static int tabHot;
+/* petit onglet vertical "P-Lite" colle au bord droit de la zone video */
+static void place_tab(int w, int h, int show) {
+    if (!hTab) return;
+    int tw = S(26), th = S(112), r = S(10); if (th > h - S(8)) th = h - S(8);
+    if (!show || th < S(40) || w < S(200)) { ShowWindow(hTab, SW_HIDE); return; }
+    int y = (h - th) / 2;
+    SetWindowPos(hTab, HWND_TOP, w - tw, y, tw, th, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    HRGN rg = CreateRoundRectRgn(0, 0, tw + r + 1, th + 1, r * 2, r * 2); SetWindowRgn(hTab, rg, TRUE);
+}
 static void do_layout(void) {
     RECT rc; GetClientRect(hMain, &rc);
     int w = rc.right, h = rc.bottom, ph = panel_height(); if (ph > h) ph = h;
     if (fullscreen) {                         /* mode TV : la vidéo occupe tout l'écran */
         ShowWindow(hPanel, SW_HIDE);
-        SetWindowPos(hVideo, NULL, 0, 0, w, h, SWP_NOZORDER); place_viz(w, h);
+        SetWindowPos(hVideo, NULL, 0, 0, w, h, SWP_NOZORDER); place_viz(w, h); place_tab(w, h, 0);
         if (barsShown) {
             POINT p = { 0, h - ph }; ClientToScreen(hMain, &p);
             SetWindowPos(hPanelFs, HWND_TOPMOST, p.x, p.y, w, ph, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         } else ShowWindow(hPanelFs, SW_HIDE);
     } else {
         if (hPanelFs) ShowWindow(hPanelFs, SW_HIDE);
-        SetWindowPos(hVideo, NULL, 0, 0, w, h - ph, SWP_NOZORDER); place_viz(w, h - ph);
+        SetWindowPos(hVideo, NULL, 0, 0, w, h - ph, SWP_NOZORDER); place_viz(w, h - ph); place_tab(w, h - ph, 1);
         SetWindowPos(hPanel, NULL, 0, h - ph, w, ph, SWP_NOZORDER | SWP_SHOWWINDOW);
     }
 }
@@ -1447,7 +1457,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.1"
+#define LAV_VERSION L"1.2"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -3044,6 +3054,35 @@ static int draw_viz_gp(HDC dc, int w, int h) {
 }
 static void draw_viz(HDC dc, int w, int h) { if (gp_init() && draw_viz_gp(dc, w, h)) return; draw_viz_gdi(dc, w, h); }
 
+static LRESULT CALLBACK TabProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT rc; GetClientRect(h, &rc); int w = rc.right, hh = rc.bottom;
+        HDC md = CreateCompatibleDC(dc); HBITMAP bm = CreateCompatibleBitmap(dc, w, hh); HGDIOBJ ob = SelectObject(md, bm);
+        for (int y = 0; y < hh; y++) { double k = (double)y / hh; COLORREF c = tabHot ? RGB((int)(24 + 6 * k), (int)(40 + 8 * k), (int)(52 + 8 * k)) : RGB((int)(20 + 4 * k), (int)(26 + 6 * k), (int)(33 + 6 * k)); frect(md, 0, y, w, y + 1, c); }
+        COLORREF ac = tabHot ? RGB(110, 230, 205) : C_ACC;
+        frect(md, 0, S(8), S(2), hh - S(8), ac);                                  /* liseré d'accent a gauche */
+        frect(md, w - S(3), S(8), w, hh - S(8), mixc(RGB(20, 26, 33), ac, 0.35));
+        { int cx = w / 2 + S(1); frect(md, cx - S(1), S(9), cx + S(2), S(12), ac); frect(md, cx - S(1), hh - S(12), cx + S(2), hh - S(9), ac); }   /* petits points haut/bas */
+        LOGFONTW lf; memset(&lf, 0, sizeof lf); lf.lfHeight = -S(14); lf.lfWeight = FW_SEMIBOLD; lf.lfEscapement = 2700; lf.lfOrientation = 2700; lf.lfQuality = CLEARTYPE_QUALITY; wcscpy(lf.lfFaceName, L"Segoe UI");
+        HFONT f = CreateFontIndirectW(&lf), of = SelectObject(md, f); SetBkMode(md, TRANSPARENT); SetTextCharacterExtra(md, S(2));
+        const wchar_t *t = L"P-Lite"; SIZE sz; GetTextExtentPoint32W(md, t, 6, &sz); TEXTMETRICW tm; GetTextMetricsW(md, &tm);
+        int x = w / 2 + tm.tmHeight / 2 + S(1), y = (hh - sz.cx) / 2; SetTextAlign(md, TA_LEFT | TA_TOP);
+        SetTextColor(md, ac); TextOutW(md, x, y, t, 1);                                  /* "P" en accent */
+        SIZE s1; GetTextExtentPoint32W(md, t, 1, &s1);
+        SetTextColor(md, tabHot ? RGB(240, 248, 252) : RGB(205, 216, 226)); TextOutW(md, x, y + s1.cx, t + 1, 5);
+        SelectObject(md, of); DeleteObject(f);
+        BitBlt(dc, 0, 0, w, hh, md, 0, 0, SRCCOPY); SelectObject(md, ob); DeleteObject(bm); DeleteDC(md); EndPaint(h, &ps); return 0; }
+    case WM_MOUSEMOVE: if (!tabHot) { tabHot = 1; TRACKMOUSEEVENT te = { sizeof te, TME_LEAVE, h, 0 }; TrackMouseEvent(&te); InvalidateRect(h, NULL, FALSE); } return 0;
+    case WM_MOUSELEAVE: tabHot = 0; InvalidateRect(h, NULL, FALSE); return 0;
+    case WM_SETCURSOR: SetCursor(LoadCursor(NULL, IDC_HAND)); return TRUE;
+    case WM_LBUTTONDOWN: SetFocus(hMain); settings_window(); return 0;
+    case WM_DROPFILES: SendMessage(hMain, m, wp, lp); return 0;
+    }
+    return DefWindowProc(h, m, wp, lp);
+}
+
 static LRESULT CALLBACK VizProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_ERASEBKGND: return 1;
@@ -3276,6 +3315,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cl, int sw) {
     wc.hIcon = NULL; wc.lpfnWndProc = PanelProc; wc.lpszClassName = L"LavPanel"; wc.hbrBackground = NULL; RegisterClassW(&wc);
     wc.lpfnWndProc = VideoProc; wc.lpszClassName = L"LavVideo"; RegisterClassW(&wc);
     wc.style = CS_DBLCLKS; wc.lpfnWndProc = VizProc; wc.lpszClassName = L"LavViz"; RegisterClassW(&wc); wc.style = 0;
+    wc.lpfnWndProc = TabProc; wc.lpszClassName = L"LavTab"; RegisterClassW(&wc);
 
     { INITCOMMONCONTROLSEX icc = { sizeof icc, ICC_LISTVIEW_CLASSES }; InitCommonControlsEx(&icc); }
     iptv_init_dir(); load_sel();
@@ -3295,6 +3335,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cl, int sw) {
     hVideo = CreateWindowExW(WS_EX_ACCEPTFILES, L"LavVideo", NULL, WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 10, 10, hMain, NULL, hi, NULL);
     hViz = CreateWindowExW(WS_EX_ACCEPTFILES, L"LavViz", NULL, WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 10, 10, hMain, NULL, hi, NULL);
     hPanel = CreateWindowExW(0, L"LavPanel", NULL, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, 10, 10, hMain, NULL, hi, NULL);
+    hTab = CreateWindowExW(0, L"LavTab", NULL, WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 10, 10, hMain, NULL, hi, NULL);
 
     hPanelFs = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"LavPanel", NULL, WS_POPUP,
                                0, 0, 10, 10, hMain, NULL, hi, NULL);
