@@ -12,7 +12,7 @@ Lecteur audio/vidéo Windows natif, léger et rapide (C + Win32, libmpv chargée
 ```
 ./build.sh
 ```
-Produit `lecteur.exe` (nécessite `x86_64-w64-mingw32-gcc` et `x86_64-w64-mingw32-windres`).
+Produit `lecteur.exe` (nécessite `x86_64-w64-mingw32-gcc` et `x86_64-w64-mingw32-windres`). Le `lecteur.exe` à jour est aussi fourni dans ce dépôt à chaque build.
 
 ## Utilisation
 Placer `lecteur.exe` dans un dossier avec `iptv\` (listes). `libmpv` et FFmpeg sont téléchargés au démarrage dans `codec\` s'ils manquent.
