@@ -1260,11 +1260,10 @@ static void rm_tree(const wchar_t *dir) {
 static int is_m3u_name(const wchar_t *n) { const wchar_t *e = wcsrchr(n, L'.'); return e && (!_wcsicmp(e, L".m3u") || !_wcsicmp(e, L".m3u8")); }
 static int safe_file_name(const wchar_t *n) { return n[0] && !wcspbrk(n, L"\\/:*?\"<>|") && is_m3u_name(n); }
 
-static void act_export(void) {
-    wchar_t out[MAX_PATH] = L"iptv_export.zip"; OPENFILENAMEW o; memset(&o, 0, sizeof o);
-    o.lStructSize = sizeof o; o.hwndOwner = hMgr; o.lpstrFile = out; o.nMaxFile = MAX_PATH; o.lpstrDefExt = L"zip";
-    o.lpstrFilter = L"Archive ZIP\0*.zip\0"; o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER;
-    if (!GetSaveFileNameW(&o)) return;
+/* dossier "archive" (a cote de l'exe) : un zip horodate de la liste IPTV a chaque fermeture de la fenetre de gestion */
+static void archive_dir(wchar_t *d) { GetModuleFileNameW(NULL, d, MAX_PATH); wchar_t *p = wcsrchr(d, L'\\'); if (p) *p = 0; wcscat(d, L"\\archive"); }
+/* zippe les playlists (.m3u/.m3u8) + sources.txt du dossier iptv. Retour : nombre de fichiers, 0 = rien, -1 = echec tar */
+static int export_zip(const wchar_t *out) {
     wchar_t args[8000], pat[MAX_PATH]; int n = 0;
     _snwprintf(args, 7999, L"-a -c -f \"%s\" -C \"%s\"", out, iptvDir); args[7999] = 0;
     _snwprintf(pat, MAX_PATH - 1, L"%s\\*", iptvDir); pat[MAX_PATH - 1] = 0;
@@ -1278,10 +1277,27 @@ static void act_export(void) {
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
-    if (!n) { MessageBoxW(hMgr, L"Rien à exporter : le dossier iptv est vide.", L"IPTV", MB_ICONINFORMATION); return; }
+    if (!n) return 0;
     DeleteFileW(out);
     HCURSOR old = SetCursor(LoadCursor(NULL, IDC_WAIT)); int ec = run_tar(args); SetCursor(old);
-    if (ec == 0) { wchar_t m[200]; _snwprintf(m, 199, L"Liste exportée : %d fichier(s).", n); m[199] = 0; MessageBoxW(hMgr, m, L"IPTV", MB_ICONINFORMATION); }
+    if (ec != 0) { DeleteFileW(out); return -1; }
+    return n;
+}
+static void archive_auto(void) {                                           /* iptv_AAAAMMJJ_HHMMSS.zip dans archive\ */
+    wchar_t dir[MAX_PATH], out[MAX_PATH]; archive_dir(dir); CreateDirectoryW(dir, NULL);
+    SYSTEMTIME st; GetLocalTime(&st);
+    _snwprintf(out, MAX_PATH - 1, L"%s\\iptv_%04d%02d%02d_%02d%02d%02d.zip", dir, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond); out[MAX_PATH - 1] = 0;
+    export_zip(out);
+}
+static void act_export(void) {
+    wchar_t out[MAX_PATH] = L"iptv_export.zip", ad[MAX_PATH]; archive_dir(ad); CreateDirectoryW(ad, NULL);
+    OPENFILENAMEW o; memset(&o, 0, sizeof o);
+    o.lStructSize = sizeof o; o.hwndOwner = hMgr; o.lpstrFile = out; o.nMaxFile = MAX_PATH; o.lpstrDefExt = L"zip"; o.lpstrInitialDir = ad;
+    o.lpstrFilter = L"Archive ZIP\0*.zip\0"; o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+    if (!GetSaveFileNameW(&o)) return;
+    int n = export_zip(out);
+    if (n == 0) MessageBoxW(hMgr, L"Rien à exporter : le dossier iptv est vide.", L"IPTV", MB_ICONINFORMATION);
+    else if (n > 0) { wchar_t m[200]; _snwprintf(m, 199, L"Liste exportée : %d fichier(s).", n); m[199] = 0; MessageBoxW(hMgr, m, L"IPTV", MB_ICONINFORMATION); }
     else MessageBoxW(hMgr, L"Export impossible (tar.exe de Windows requis : Windows 10 ou plus récent).", L"IPTV", MB_ICONERROR);
 }
 
@@ -1319,7 +1335,8 @@ static void import_walk(const wchar_t *dir) {
 
 static void act_import_zip(void) {
     wchar_t zip[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o);
-    o.lStructSize = sizeof o; o.hwndOwner = hMgr; o.lpstrFile = zip; o.nMaxFile = MAX_PATH;
+    wchar_t ad[MAX_PATH]; archive_dir(ad); CreateDirectoryW(ad, NULL);
+    o.lStructSize = sizeof o; o.hwndOwner = hMgr; o.lpstrFile = zip; o.nMaxFile = MAX_PATH; o.lpstrInitialDir = ad; o.lpstrTitle = L"Importer une archive IPTV (dossier archive)";
     o.lpstrFilter = L"Archive ZIP\0*.zip\0"; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
     if (!GetOpenFileNameW(&o)) return;
     wchar_t tmp[MAX_PATH], args[2000]; GetTempPathW(MAX_PATH, tmp);
@@ -1446,7 +1463,8 @@ static void manage_window(void) {
         if (!IsDialogMessage(hMgr, &msg)) { TranslateMessage(&msg); DispatchMessage(&msg); }
     }
     { int own = 0; for (int i = 0; i < nChans; i++) if (chans[i].file == 0) own++;
-      if (own) save_own(-1); }                       /* fermeture (bouton Fermer, croix ou Echap) : toute la liste est reecrite sur disque */
+      if (own) save_own(-1); }
+    archive_auto();                               /* export zip horodate dans archive\ */                       /* fermeture (bouton Fermer, croix ou Echap) : toute la liste est reecrite sur disque */
     EnableWindow(hMain, TRUE); DestroyWindow(hMgr); hMgr = NULL; menuOpen = prevMenu;
     SetForegroundWindow(hMain);
     /* la selection langue / categorie doit rester valide apres les modifications */
@@ -1461,7 +1479,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.4"
+#define LAV_VERSION L"1.5"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
