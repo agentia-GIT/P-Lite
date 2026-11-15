@@ -168,13 +168,17 @@ static int panel_height(void) { return (tracksVisible ? S(34) : 0) + S(64); }
 
 static void place_viz(int w, int h) { if (hViz) SetWindowPos(hViz, HWND_TOP, 0, 0, w, h, SWP_NOACTIVATE | (vizOn ? SWP_SHOWWINDOW : SWP_HIDEWINDOW)); }
 static HWND hTab; static int tabHot;
-/* petit onglet vertical "P-Lite" colle au bord droit de la zone video */
-static void place_tab(int w, int h, int show) {
-    if (!hTab) return;
-    int tw = S(26), th = S(112), r = S(10); if (th > h - S(8)) th = h - S(8);
-    if (!show || th < S(40) || w < S(200)) { ShowWindow(hTab, SW_HIDE); return; }
-    int y = (h - th) / 2;
-    SetWindowPos(hTab, HWND_TOP, w - tw, y, tw, th, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+/* petit onglet vertical "P-Lite" : fenetre separee collee au bord gauche (exterieur) de la fenetre, en haut de la zone video */
+static void place_tab(int show) {
+    if (!hTab || !hMain) return;
+    int tw = S(30), th = S(150), r = S(10);
+    if (!show || fullscreen || IsIconic(hMain) || !IsWindowVisible(hMain)) { ShowWindow(hTab, SW_HIDE); return; }
+    RECT fr; static HRESULT (WINAPI *pDwmGet)(HWND, DWORD, PVOID, DWORD); static int ld;
+    if (!ld) { ld = 1; HMODULE dw = LoadLibraryW(L"dwmapi.dll"); if (dw) *(FARPROC *)&pDwmGet = GetProcAddress(dw, "DwmGetWindowAttribute"); }
+    if (!pDwmGet || FAILED(pDwmGet(hMain, 9, &fr, sizeof fr))) GetWindowRect(hMain, &fr);      /* bords visibles (sans l'ombre) */
+    POINT p = { 0, 0 }; ClientToScreen(hMain, &p); RECT cr; GetClientRect(hMain, &cr);
+    if (th > cr.bottom - S(60)) th = cr.bottom - S(60); if (th < S(60)) { ShowWindow(hTab, SW_HIDE); return; }
+    SetWindowPos(hTab, NULL, fr.left - tw, p.y, tw, th, SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
     HRGN rg = CreateRoundRectRgn(0, 0, tw + r + 1, th + 1, r * 2, r * 2); SetWindowRgn(hTab, rg, TRUE);
 }
 static void do_layout(void) {
@@ -182,14 +186,14 @@ static void do_layout(void) {
     int w = rc.right, h = rc.bottom, ph = panel_height(); if (ph > h) ph = h;
     if (fullscreen) {                         /* mode TV : la vidéo occupe tout l'écran */
         ShowWindow(hPanel, SW_HIDE);
-        SetWindowPos(hVideo, NULL, 0, 0, w, h, SWP_NOZORDER); place_viz(w, h); place_tab(w, h, 0);
+        SetWindowPos(hVideo, NULL, 0, 0, w, h, SWP_NOZORDER); place_viz(w, h); place_tab(0);
         if (barsShown) {
             POINT p = { 0, h - ph }; ClientToScreen(hMain, &p);
             SetWindowPos(hPanelFs, HWND_TOPMOST, p.x, p.y, w, ph, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         } else ShowWindow(hPanelFs, SW_HIDE);
     } else {
         if (hPanelFs) ShowWindow(hPanelFs, SW_HIDE);
-        SetWindowPos(hVideo, NULL, 0, 0, w, h - ph, SWP_NOZORDER); place_viz(w, h - ph); place_tab(w, h - ph, 1);
+        SetWindowPos(hVideo, NULL, 0, 0, w, h - ph, SWP_NOZORDER); place_viz(w, h - ph); place_tab(1);
         SetWindowPos(hPanel, NULL, 0, h - ph, w, ph, SWP_NOZORDER | SWP_SHOWWINDOW);
     }
 }
@@ -1457,7 +1461,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.2"
+#define LAV_VERSION L"1.3"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -3077,7 +3081,7 @@ static LRESULT CALLBACK TabProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: if (!tabHot) { tabHot = 1; TRACKMOUSEEVENT te = { sizeof te, TME_LEAVE, h, 0 }; TrackMouseEvent(&te); InvalidateRect(h, NULL, FALSE); } return 0;
     case WM_MOUSELEAVE: tabHot = 0; InvalidateRect(h, NULL, FALSE); return 0;
     case WM_SETCURSOR: SetCursor(LoadCursor(NULL, IDC_HAND)); return TRUE;
-    case WM_LBUTTONDOWN: SetFocus(hMain); settings_window(); return 0;
+    case WM_LBUTTONDOWN: if (IsWindowEnabled(hMain)) settings_window(); return 0;
     case WM_DROPFILES: SendMessage(hMain, m, wp, lp); return 0;
     }
     return DefWindowProc(h, m, wp, lp);
@@ -3217,7 +3221,7 @@ static void poll(void) {
 static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_SIZE: if (hPanelFs) do_layout(); return 0;
-    case WM_MOVE: if (hPanelFs && fullscreen) do_layout(); return 0;
+    case WM_MOVE: if (hPanelFs && fullscreen) do_layout(); else place_tab(1); return 0;
     case WM_GETMINMAXINFO: ((MINMAXINFO *)lp)->ptMinTrackSize.x = S(980); ((MINMAXINFO *)lp)->ptMinTrackSize.y = S(380); return 0;
     case WM_ERASEBKGND: return 1;
     case WM_KEYDOWN: key(wp); return 0;
@@ -3335,7 +3339,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cl, int sw) {
     hVideo = CreateWindowExW(WS_EX_ACCEPTFILES, L"LavVideo", NULL, WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 10, 10, hMain, NULL, hi, NULL);
     hViz = CreateWindowExW(WS_EX_ACCEPTFILES, L"LavViz", NULL, WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 10, 10, hMain, NULL, hi, NULL);
     hPanel = CreateWindowExW(0, L"LavPanel", NULL, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, 10, 10, hMain, NULL, hi, NULL);
-    hTab = CreateWindowExW(0, L"LavTab", NULL, WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 10, 10, hMain, NULL, hi, NULL);
+    hTab = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"LavTab", NULL, WS_POPUP, 0, 0, 10, 10, hMain, NULL, hi, NULL);
 
     hPanelFs = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"LavPanel", NULL, WS_POPUP,
                                0, 0, 10, 10, hMain, NULL, hi, NULL);
