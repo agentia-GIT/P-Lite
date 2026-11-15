@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:-1 group-title="Musique" tvg-language="French",Nostalgie 80-90
+https://streaming.nrjaudio.fm/ou62iyxp336f?origine=fluxradios&aw_0_1st.station=Nostalgie-80-90
+#EXTINF:-1 group-title="Musique" tvg-language="French",100% Radio 80
+http://100radio-80.ice.infomaniak.ch/100radio-80-128.mp3
+#EXTINF:-1 group-title="Musique" tvg-language="French",Made in 80
+https://stream2.madein80.live/listen/madein80/play.mp3

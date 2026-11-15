@@ -1,0 +1,5 @@
+IPTV_France.m3u|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/fr.m3u
+IPTV_France_TNT.m3u|https://raw.githubusercontent.com/Free-TV/IPTV/master/playlists/playlist_france.m3u8
+IPTV_Belgique.m3u|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/be.m3u
+IPTV_Suisse.m3u|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ch.m3u
+IPTV_Canada.m3u|https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ca.m3u

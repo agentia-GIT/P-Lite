@@ -1,0 +1,8 @@
+*.exe
+*.o
+*.old
+*.bak
+*.tmp
+capture.ini
+codec/
+lecteur_res.o
