@@ -1467,7 +1467,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.8"
+#define LAV_VERSION L"1.9"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -1893,8 +1893,31 @@ static int app_install_online(HWND owner) {                           /* telecha
     int r = app_swap(owner, f); DeleteFileW(f); return r;
 }
 static void app_ini(wchar_t *p) { exe_dir(p); wcscat(p, L"\\capture.ini"); }
+static void default_lists_once(void) {                                  /* listes ajoutees par defaut, une seule fois (le dossier iptv n'est jamais ecrase) */
+    wchar_t ip[MAX_PATH], d[MAX_PATH], f[MAX_PATH], b[16]; app_ini(ip); exe_dir(d); wcscat(d, L"\\iptv"); CreateDirectoryW(d, NULL);
+    GetPrivateProfileStringW(L"capture", L"liste_iptvorg", L"", b, 16, ip);
+    if (b[0] != L'1') {
+        _snwprintf(f, MAX_PATH - 1, L"%s\\IPTV_org.m3u", d); f[MAX_PATH - 1] = 0;
+        if (GetFileAttributesW(f) != INVALID_FILE_ATTRIBUTES || download_playlist(L"https://iptv-org.github.io/iptv/index.m3u", f)) {
+            wcscpy(iptvDir, d); sources_rewrite(NULL, L"IPTV_org.m3u", L"https://iptv-org.github.io/iptv/index.m3u");
+            WritePrivateProfileStringW(L"capture", L"liste_iptvorg", L"1", ip);
+        }
+    }
+    GetPrivateProfileStringW(L"capture", L"radio_best8090", L"", b, 16, ip);
+    if (b[0] != L'1') {
+        static const char E[] = "\r\n#EXTINF:-1 group-title=\"Musique\",Best Of 80s & 90s\r\nhttps://live.streamthe.world/xmihjmb00g4tv\r\n";
+        _snwprintf(f, MAX_PATH - 1, L"%s\\Musique_80_90.m3u", d); f[MAX_PATH - 1] = 0;
+        char *t = read_all(f); int has = t && strstr(t, "xmihjmb00g4tv"); int had = t != NULL; free(t);
+        if (!has) {
+            HANDLE h = CreateFileW(f, FILE_APPEND_DATA, 0, NULL, OPEN_ALWAYS, 0, NULL);
+            if (h != INVALID_HANDLE_VALUE) { DWORD w; if (!had) WriteFile(h, "#EXTM3U\r\n", 9, &w, NULL); WriteFile(h, E, (DWORD)strlen(E), &w, NULL); CloseHandle(h); }
+        }
+        WritePrivateProfileStringW(L"capture", L"radio_best8090", L"1", ip);
+    }
+}
 static DWORD WINAPI app_check_thread(LPVOID p) {                       /* verification au demarrage */
     (void)p; wchar_t v[32], ref[32] = L"", ip[MAX_PATH];
+    default_lists_once();
     if (app_remote_version(v) && ver_cmp(LAV_VERSION, v) < 0) {
         app_ini(ip); GetPrivateProfileStringW(L"capture", L"maj_refus", L"", ref, 32, ip);
         if (wcscmp(ref, v)) { wcscpy(gNewVer, v); PostMessage(hMain, WM_LAV_NEWVER, 0, 0); }
@@ -2110,7 +2133,7 @@ static int install_window(int needMpv, int needFf, int ask) {
 #define WDA_EXCLUDEFROMCAPTURE 0x11
 #endif
 enum { CM_SCREEN, CM_ZONE, CM_WINDOW, CM_CAMERA };
-static wchar_t camDev[160]; static int camSize, camWaitCfg, capQuit;       /* camera locale (DirectShow) ; camPrev : apercu en cours dans le lecteur (1 = direct, 2 = pendant l'enregistrement) */
+static wchar_t camDev[160]; static int camSize, capQuit;       /* camera locale (DirectShow) ; camPrev : apercu en cours dans le lecteur (1 = direct, 2 = pendant l'enregistrement) */
 static const wchar_t *CAM_SZ[4] = { L"", L"640x480", L"1280x720", L"1920x1080" };
 typedef struct { int mode, crf, fps, abr, speed, audio, cursor, fmt, syncMs, hasZone; RECT zone; wchar_t outdir[MAX_PATH]; } CapCfg;
 static CapCfg cc = { CM_SCREEN, 26, 30, 160, 1, 1, 1, 0, 0, 0, { 0, 0, 0, 0 }, L"" };
@@ -2568,7 +2591,6 @@ static void cap_layout(void) {
     for (int i = 0; i < 4; i++) SetRect(&capR[R_M0 + i], x0 + i * (tw + g), S(38), x0 + i * (tw + g) + tw, S(74));
     y = S(84);
     if (cc.mode == CM_ZONE) { SetRect(&capR[R_TARGET], x0, y, x1 - S(156), y + S(34)); SetRect(&capR[R_ZONE], x1 - S(150), y, x1, y + S(34)); }
-    else if (cc.mode == CM_CAMERA) { SetRect(&capR[R_TARGET], x0, y, x1 - S(206), y + S(34)); SetRect(&capR[R_ZONE], x1 - S(200), y, x1, y + S(34)); }
     else { SetRect(&capR[R_TARGET], x0, y, x1, y + S(34)); SetRectEmpty(&capR[R_ZONE]); }
     for (int k = 0; k < 4; k++) { int yy = S(158) + k * S(40); SetRect(&capR[R_S0 + k], x0 + S(190), yy + S(10), x1 - S(176), yy + S(26)); }
     int ow = (x1 - x0 - 3 * g) / 4; y = S(330);
@@ -2626,7 +2648,6 @@ static void cap_paint(HDC dc, int W, int H) {
     for (int i = 0; i < 4; i++) cap_tog(dc, R_M0 + i, mn[i], cc.mode == i, 0, busy);
     int dim = cap_target_text(b);
     if (cc.mode == CM_ZONE) { cap_chip(dc, R_TARGET, b, dim, busy, 0); cap_tog(dc, R_ZONE, L"Choisir la zone…", 0, 0, busy); }
-    else if (cc.mode == CM_CAMERA) { cap_chip(dc, R_TARGET, b, dim, busy, 1); cap_tog(dc, R_ZONE, L"Configurer la caméra", 0, 0, busy); }
     else cap_chip(dc, R_TARGET, b, dim, busy, 1);
     SetRect(&t, pad, S(134), W - pad, S(154)); text(dc, L"QUALITÉ", &t, C_DIM, fSmall, DT_LEFT);
     for (int k = 0; k < 4; k++) {
@@ -2706,12 +2727,6 @@ static void cap_camera_menu(void) {
     if (c >= 500 && c < 500 + nCam) { wcscpy(camDev, camL[c - 500].n); cap_save(); cam_preview_start(1); }
     else if (c >= 480 && c <= 483) { camSize = c - 480; cap_save(); cam_preview_start(1); }
 }
-static void cam_configure(void) {                 /* ouvre l'application Caméra de Windows (reglages, luminosite, etc.) */
-    if (camPrev) { cam_preview_stop(); camWaitCfg = 1; }                       /* on libere la camera pour l'application ; l'apercu reprend au retour sur cette fenetre */
-    HINSTANCE r = ShellExecuteW(hCap, L"open", L"microsoft.windows.camera:", NULL, NULL, SW_SHOWNORMAL);
-    if ((INT_PTR)r <= 32) r = ShellExecuteW(hCap, L"open", L"ms-settings:camera", NULL, NULL, SW_SHOWNORMAL);
-    if ((INT_PTR)r <= 32) { camWaitCfg = 0; cap_set_status(L"Impossible d'ouvrir l'application Caméra de Windows.", C_RED); cam_preview_start(1); }
-}
 static void cap_browse(void) {
     BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = hCap; bi.lpszTitle = L"Dossier de sortie des captures"; bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
     LPITEMIDLIST pl = SHBrowseForFolderW(&bi);
@@ -2739,7 +2754,7 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         switch (id) {
         case R_M0: case R_M1: case R_M2: case R_M3: cc.mode = id - R_M0; cap_save(); if (cc.mode == CM_CAMERA) cam_preview_start(1); else cam_preview_stop(); break;
         case R_TARGET: if (cc.mode == CM_SCREEN) cap_screen_menu(); else if (cc.mode == CM_WINDOW) cap_window_menu(); else if (cc.mode == CM_CAMERA) cap_camera_menu(); else cap_pick_zone(); break;
-        case R_ZONE: if (cc.mode == CM_CAMERA) cam_configure(); else cap_pick_zone(); break;
+        case R_ZONE: cap_pick_zone(); break;
         case R_S0: case R_S1: case R_S2: case R_S3: capDrag = id - R_S0; SetCapture(h); sld_set(capDrag, GET_X_LPARAM(lp)); break;
         case R_AUD: cc.audio = !cc.audio; cap_save(); break;
         case R_CUR: if (cc.mode != CM_CAMERA) { cc.cursor = !cc.cursor; cap_save(); } break;
@@ -2767,7 +2782,6 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_CLOSE:
         if (capRunning) { capCloseAfter = 1; cap_stop(); return 0; }
         DestroyWindow(h); return 0;
-    case WM_ACTIVATE: if (LOWORD(wp) != WA_INACTIVE && camWaitCfg) { camWaitCfg = 0; if (cc.mode == CM_CAMERA && !capRunning) cam_preview_start(1); } return 0;
     case WM_DESTROY: if (!capQuit) cam_preview_stop(); hCap = NULL; return 0;
     }
     return DefWindowProc(h, m, wp, lp);
