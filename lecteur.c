@@ -902,6 +902,7 @@ static void iptv_exec(int c) {
 }
 
 /* bouton IPTV : listes IPTV, puis chaines musicales (par leur nom) */
+static int musIdx[1000];
 static void iptv_menu(void) {
     iptv_init_dir(); load_channels();
     HMENU m = CreatePopupMenu(); int total = 0, nMus = 0, cnt[64]; memset(cnt, 0, sizeof cnt);
@@ -921,9 +922,9 @@ static void iptv_menu(void) {
     if (nMus) {
         if (total) AppendMenuW(m, MF_SEPARATOR, 0, NULL);
         AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"MUSIQUE");
-        for (int i = 0; i < nChans && i < 2900; i++) if (is_music(i)) {
-            wchar_t e[256]; esc_amp(chans[i].name, e, 256);
-            AppendMenuW(m, MF_STRING | (playing && !wcscmp(chanTitle, chans[i].name) ? MF_CHECKED : 0), 5000 + i, e);
+        for (int i = 0, k = 0; i < nChans && k < 1000; i++) if (is_music(i)) {       /* indices independants de la position (les grandes listes IPTV passent avant) */
+            wchar_t e[256]; esc_amp(chans[i].name, e, 256); musIdx[k] = i;
+            AppendMenuW(m, MF_STRING | (playing && !wcscmp(chanTitle, chans[i].name) ? MF_CHECKED : 0), 10000 + k, e); k++;
         }
     }
     if (!total && !nMus) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Aucune liste IPTV");
@@ -931,7 +932,7 @@ static void iptv_menu(void) {
     AppendMenuW(m, MF_STRING, 8999, L"Gérer les listes…");
     int c = run_menu(m, rIptv);
     if (c == 8999) { manage_window(); return; }
-    if (c >= 5000 && c < 5000 + nChans && c < 7900) { play_channel(c - 5000); inval(); return; }
+    if (c >= 10000 && c < 11000) { int i = musIdx[c - 10000]; if (i >= 0 && i < nChans) { play_channel(i); inval(); } return; }
     if (c == 8000 || (c >= 8100 && c < 8100 + nFiles)) {
         if (c == 8000) selList[0] = 0; else wcscpy(selList, fileNames[c - 8100]);
         selLang[0] = 0; selCat[0] = 0; build_cats(); save_sel(); inval();
@@ -1467,7 +1468,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.9"
+#define LAV_VERSION L"1.10"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
