@@ -1468,7 +1468,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.10"
+#define LAV_VERSION L"1.11"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -3368,7 +3368,7 @@ static void poll(void) {
 static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_SIZE: if (hPanelFs) do_layout(); return 0;
-    case WM_MOVE: if (hPanelFs && fullscreen) do_layout(); else return 0;
+    case WM_MOVE: if (hPanelFs && fullscreen) do_layout(); return 0;      /* sans ce return : chute dans WM_GETMINMAXINFO et ecriture a une adresse invalide (plantage en plein ecran) */
     case WM_GETMINMAXINFO: ((MINMAXINFO *)lp)->ptMinTrackSize.x = S(980); ((MINMAXINFO *)lp)->ptMinTrackSize.y = S(380); return 0;
     case WM_ERASEBKGND: return 1;
     case WM_KEYDOWN: key(wp); return 0;
