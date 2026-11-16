@@ -1468,7 +1468,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.11"
+#define LAV_VERSION L"1.12"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -2142,6 +2142,8 @@ static HWND hCap, capWin, hZone;
 static int capMon = -1, capHover = -1, capDrag = -1, capStopping, capCloseAfter, zoneState, zoneDrag;
 static DWORD capT0;
 static wchar_t capLast[MAX_PATH], capCurOut[MAX_PATH], capStatus[420], capPipeName[80];
+static int capPaused, capPausing, nSeg; static DWORD capAccum; static wchar_t capFinal[MAX_PATH], segF[64][MAX_PATH];   /* pause/reprise : enregistrement par parties, assemblees a l'arret */
+static void cap_apply_size(void);
 static COLORREF capStatusClr;
 static HANDLE capProc, capIn, capErrR, capErrThr, capStopThr, aThread, aPipe, aEvInit, aEvGo, evStop;
 static char capErr[2048]; static CRITICAL_SECTION csErr; static int csInit;
@@ -2451,9 +2453,14 @@ static void cap_start(void) {
     if (cc.mode == CM_CAMERA && !camDev[0]) { cap_set_status(L"Choisissez d'abord une caméra.", C_RED); return; }
     if (!cap_region(&rg, err)) { cap_set_status(err, C_RED); return; }
     if (!dir_exists(cc.outdir) && !CreateDirectoryW(cc.outdir, NULL)) desktop_dir(cc.outdir);
-    SYSTEMTIME st; GetLocalTime(&st);
-    _snwprintf(capCurOut, MAX_PATH - 1, L"%s\\Capture_%04d-%02d-%02d_%02d-%02d-%02d.%s", cc.outdir, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, cc.fmt ? L"mp4" : L"mkv");
-    capCurOut[MAX_PATH - 1] = 0;
+    int fresh = !capPaused;
+    if (fresh) {
+        SYSTEMTIME st; GetLocalTime(&st); nSeg = 0; capAccum = 0; capLast[0] = 0;
+        _snwprintf(capFinal, MAX_PATH - 1, L"%s\\Capture_%04d-%02d-%02d_%02d-%02d-%02d.%s", cc.outdir, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, cc.fmt ? L"mp4" : L"mkv");
+        capFinal[MAX_PATH - 1] = 0;
+    }
+    { wchar_t bs[MAX_PATH]; wcscpy(bs, capFinal); wchar_t *dt = wcsrchr(bs, L'.'); if (dt) *dt = 0;
+      _snwprintf(capCurOut, MAX_PATH - 1, L"%s_p%02d.%s", bs, nSeg + 1, cc.fmt ? L"mp4" : L"mkv"); capCurOut[MAX_PATH - 1] = 0; }
     aEvInit = CreateEventW(NULL, TRUE, FALSE, NULL); aEvGo = CreateEventW(NULL, TRUE, FALSE, NULL); evStop = CreateEventW(NULL, TRUE, FALSE, NULL);
     capPipeName[0] = 0; aInitOk = 0;
     if (useAudio) {
@@ -2506,9 +2513,10 @@ static void cap_start(void) {
     if (cc.mode == CM_CAMERA) cam_preview_udp();
     capErrThr = CreateThread(NULL, 0, cap_err_thread, NULL, 0, NULL);
     if (useAudio) SetEvent(aEvGo);
-    capRunning = 1; capStopping = 0; capT0 = GetTickCount(); capLast[0] = 0;
+    capRunning = 1; capPaused = 0; capPausing = 0; capStopping = 0; capT0 = GetTickCount();
     cap_set_status(L"● Enregistrement en cours…", C_RED);
-    if (!SetWindowDisplayAffinity(hCap, WDA_EXCLUDEFROMCAPTURE)) ShowWindow(hCap, SW_MINIMIZE);    /* anciens Windows : la fenetre ne peut pas etre masquee de la capture */
+    if (!SetWindowDisplayAffinity(hCap, WDA_EXCLUDEFROMCAPTURE) && fresh) ShowWindow(hCap, SW_MINIMIZE);    /* anciens Windows : la fenetre ne peut pas etre masquee de la capture */
+    else cap_apply_size();                                                                                   /* fenetre reduite aux boutons de controle */
     SetTimer(hCap, 2, 500, NULL); inval();
 }
 
@@ -2526,6 +2534,46 @@ static void cap_stop(void) {
     capStopThr = CreateThread(NULL, 0, cap_stop_thread, NULL, 0, NULL);
 }
 
+static int cap_concat(void) {                       /* assemble les parties (sans re-encodage) */
+    wchar_t lp[MAX_PATH + 8], ffp[MAX_PATH], cl[1190]; char out[2000];
+    _snwprintf(lp, MAX_PATH + 7, L"%s.liste.txt", capFinal); lp[MAX_PATH + 7] = 0;
+    HANDLE h = CreateFileW(lp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL); if (h == INVALID_HANDLE_VALUE) return 0;
+    for (int k = 0; k < nSeg; k++) {
+        char u[MAX_PATH * 3], l[MAX_PATH * 3 + 40]; w8(segF[k], u, sizeof u);
+        for (char *q = u; *q; q++) if (*q == '\\') *q = '/';
+        int n = snprintf(l, sizeof l, "file '%s'\r\n", u); DWORD w; WriteFile(h, l, n, &w, NULL);
+    }
+    CloseHandle(h); ff_path(ffp);
+    _snwprintf(cl, 1189, L"\"%s\" -hide_banner -y -loglevel error -f concat -safe 0 -i \"%s\" -c copy %s\"%s\"", ffp, lp, cc.fmt ? L"-tag:v hvc1 " : L"", capFinal); cl[1189] = 0;
+    int ec = run_capture(cl, out, sizeof out, 900000); DeleteFileW(lp);
+    WIN32_FILE_ATTRIBUTE_DATA fa; int ok = ec == 0 && GetFileAttributesExW(capFinal, GetFileExInfoStandard, &fa) && (fa.nFileSizeHigh || fa.nFileSizeLow > 2048);
+    if (ok) for (int k = 0; k < nSeg; k++) DeleteFileW(segF[k]);
+    return ok;
+}
+
+static void cap_finalize(const wchar_t *errm) {      /* fin de session : renomme / assemble les parties et remet la fenetre en grand */
+    capPaused = 0; capPausing = 0;
+    if (nSeg == 0) { if (errm && errm[0]) cap_set_status(errm, C_RED); else cap_set_status(L"Aucun enregistrement.", C_DIM); }
+    else {
+        int ok; wchar_t m[420];
+        if (nSeg == 1) ok = MoveFileExW(segF[0], capFinal, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED) != 0;
+        else { cap_set_status(L"Assemblage des parties…", C_ACC); if (hCap) { InvalidateRect(hCap, NULL, FALSE); UpdateWindow(hCap); } ok = cap_concat(); }
+        if (ok) {
+            WIN32_FILE_ATTRIBUTE_DATA fa; double mo = 0; if (GetFileAttributesExW(capFinal, GetFileExInfoStandard, &fa)) mo = (fa.nFileSizeHigh * 4294967296.0 + fa.nFileSizeLow) / 1048576.0;
+            const wchar_t *nm = wcsrchr(capFinal, L'\\'); nm = nm ? nm + 1 : capFinal;
+            wcscpy(capLast, capFinal); _snwprintf(m, 419, L"✔ Enregistré : %s   (%.1f Mo)", nm, mo); m[419] = 0; cap_set_status(m, RGB(60, 200, 90));
+        } else {
+            wcscpy(capLast, segF[0]);
+            cap_set_status(nSeg == 1 ? L"Impossible de renommer le fichier : il est conservé sous son nom de partie (_p01)." : L"Assemblage impossible : les parties (_p01, _p02…) sont conservées dans le dossier de sortie.", C_RED);
+        }
+    }
+    nSeg = 0; capAccum = 0;
+    if (hCap) { SetWindowDisplayAffinity(hCap, 0); cap_apply_size(); InvalidateRect(hCap, NULL, FALSE); }
+    if (camPrev == 2) cam_preview_stop();
+    if (hCap && !capCloseAfter && !capQuit && cc.mode == CM_CAMERA) cam_preview_start(0);   /* retour a l'apercu direct */
+    inval();
+}
+
 static void cap_finish(int fromError) {
     audio_stop();
     if (capIn) { CloseHandle(capIn); capIn = NULL; }
@@ -2535,28 +2583,32 @@ static void cap_finish(int fromError) {
     cap_free_events();
     int stopped = capStopping;
     if (hCap) KillTimer(hCap, 2);
+    capAccum += GetTickCount() - capT0;
     capRunning = 0; capStopping = 0;
     WIN32_FILE_ATTRIBUTE_DATA fa; int has = GetFileAttributesExW(capCurOut, GetFileExInfoStandard, &fa) && (fa.nFileSizeHigh || fa.nFileSizeLow > 2048);
-    if (has && (stopped || ec == 0)) {
-        double mo = (fa.nFileSizeHigh * 4294967296.0 + fa.nFileSizeLow) / 1048576.0; wchar_t m[420];
-        const wchar_t *nm = wcsrchr(capCurOut, L'\\'); nm = nm ? nm + 1 : capCurOut;
-        wcscpy(capLast, capCurOut); _snwprintf(m, 419, L"✔ Enregistré : %s   (%.1f Mo)", nm, mo); m[419] = 0; cap_set_status(m, RGB(60, 200, 90));
-    } else {
-        wchar_t m[420], e[400] = L""; char tail[360];
+    int segOk = has && (stopped || ec == 0); wchar_t m[420] = L"";
+    if (segOk) { if (nSeg < 60) wcscpy(segF[nSeg++], capCurOut); }
+    else {
+        wchar_t e[400] = L""; char tail[360];
         EnterCriticalSection(&csErr); { size_t l = strlen(capErr); const char *p = capErr + (l > 340 ? l - 340 : 0); strncpy(tail, p, 359); tail[359] = 0; } LeaveCriticalSection(&csErr);
         for (char *q = tail; *q; q++) if (*q == '\r' || *q == '\n') *q = ' ';
         u8w(tail, e, 400);
         if (e[0]) _snwprintf(m, 419, L"FFmpeg s'est arrêté : %s", e); else _snwprintf(m, 419, L"FFmpeg s'est arrêté (code %lu).", ec);
-        m[419] = 0; cap_set_status(m, C_RED); (void)fromError;
+        m[419] = 0; (void)fromError;
     }
-    if (hCap) { SetWindowDisplayAffinity(hCap, 0); InvalidateRect(hCap, NULL, FALSE); }
-    if (camPrev == 2) cam_preview_stop();
-    if (hCap && !capCloseAfter && !capQuit && cc.mode == CM_CAMERA) cam_preview_start(1);   /* retour a l'apercu direct */
-    inval();
+    if (capPausing && segOk && !capCloseAfter && !capQuit) {          /* mise en pause : la partie est fermee, la session reste ouverte */
+        capPausing = 0; capPaused = 1;
+        if (camPrev == 2) cam_preview_stop();
+        cap_set_status(L"⏸ En pause — cliquez sur « Reprendre » pour continuer, ou sur « Arrêter » pour terminer.", C_ACC);
+        if (hCap) InvalidateRect(hCap, NULL, FALSE);
+        inval(); return;
+    }
+    cap_finalize(m);
 }
 
 static void cap_shutdown(void) {              /* fermeture du lecteur pendant un enregistrement : on termine proprement le fichier */
-    capQuit = 1;
+    capQuit = 1; capPausing = 0;
+    if (capPaused && !capRunning) { cap_finalize(NULL); return; }
     if (!capRunning || !capProc) return;
     if (capStopThr) WaitForSingleObject(capStopThr, 35000);
     else { DWORD w; if (capIn) WriteFile(capIn, "q", 1, &w, NULL); capStopping = 1; audio_stop(); if (WaitForSingleObject(capProc, 30000) != WAIT_OBJECT_0) TerminateProcess(capProc, 1); }
@@ -2564,10 +2616,23 @@ static void cap_shutdown(void) {              /* fermeture du lecteur pendant un
 }
 
 /* ----- fenetre de capture (dessinee a la main, style du lecteur) ----- */
-enum { R_M0, R_M1, R_M2, R_M3, R_TARGET, R_ZONE, R_S0, R_S1, R_S2, R_S3, R_AUD, R_CUR, R_MKV, R_MP4, R_OUT, R_BROWSE, R_DESK, R_REC, R_OPEN, R_PLAY, R_CLOSE, R_N };
+enum { R_M0, R_M1, R_M2, R_M3, R_TARGET, R_ZONE, R_S0, R_S1, R_S2, R_S3, R_AUD, R_CUR, R_MKV, R_MP4, R_OUT, R_BROWSE, R_DESK, R_REC, R_OPEN, R_PLAY, R_CLOSE, R_PAUSE, R_N };
 static RECT capR[R_N];
 #define CAP_W 640
 #define CAP_H 568
+#define CAP_CW 380
+#define CAP_CH 150
+static void cap_apply_size(void) {                 /* fenetre complete, ou reduite aux boutons de controle pendant l'enregistrement */
+    if (!hCap || IsIconic(hCap)) return;
+    int comp = capRunning || capPaused, cw = comp ? S(CAP_CW) : S(CAP_W), ch = comp ? S(CAP_CH) : S(CAP_H);
+    RECT r = { 0, 0, cw, ch }; AdjustWindowRectEx(&r, (DWORD)GetWindowLongPtr(hCap, GWL_STYLE), FALSE, 0);
+    RECT wr; GetWindowRect(hCap, &wr); int w = r.right - r.left, h = r.bottom - r.top, x = wr.left, y = wr.top;
+    MONITORINFO mi = { sizeof mi }; if (GetMonitorInfo(MonitorFromWindow(hCap, MONITOR_DEFAULTTONEAREST), &mi)) {
+        if (x + w > mi.rcWork.right) x = mi.rcWork.right - w; if (y + h > mi.rcWork.bottom) y = mi.rcWork.bottom - h;
+        if (x < mi.rcWork.left) x = mi.rcWork.left; if (y < mi.rcWork.top) y = mi.rcWork.top; }
+    SetWindowPos(hCap, comp ? HWND_TOPMOST : HWND_NOTOPMOST, x, y, w, h, SWP_NOACTIVATE);
+    InvalidateRect(hCap, NULL, FALSE);
+}
 static const struct { const wchar_t *name; int lo, hi, step, inv; } SLD[4] = {
     { L"Qualité vidéo (x265)", 18, 34, 1, 1 }, { L"Images par seconde", 10, 60, 5, 0 },
     { L"Qualité audio (AAC)", 64, 320, 16, 0 }, { L"Vitesse d'encodage", 0, 3, 1, 0 } };
@@ -2588,6 +2653,12 @@ static void sld_set(int k, int x) {
 }
 
 static void cap_layout(void) {
+    if (capRunning || capPaused) {                    /* mode compact : Pause/Reprendre + Arreter */
+        RECT cr; GetClientRect(hCap, &cr); for (int i = 0; i < R_N; i++) SetRectEmpty(&capR[i]);
+        int pad = S(18), g = S(8), y = S(92), bw = (cr.right - 2 * pad - g) / 2;
+        SetRect(&capR[R_PAUSE], pad, y, pad + bw, y + S(44)); SetRect(&capR[R_REC], pad + bw + g, y, cr.right - pad, y + S(44));
+        return;
+    }
     int W = S(CAP_W), pad = S(22), g = S(6), x0 = pad, x1 = W - pad, y, tw = (x1 - x0 - 3 * g) / 4;
     for (int i = 0; i < 4; i++) SetRect(&capR[R_M0 + i], x0 + i * (tw + g), S(38), x0 + i * (tw + g) + tw, S(74));
     y = S(84);
@@ -2643,6 +2714,25 @@ static void cap_chip(HDC dc, int id, const wchar_t *t, int dim, int dis, int arr
 
 static void cap_paint(HDC dc, int W, int H) {
     RECT all = { 0, 0, W, H }; fill(dc, &all, C_BAR); cap_layout();
+    if (capRunning || capPaused) {
+        int cp = S(18); RECT t = { cp, S(12), W - cp, S(84) }; wchar_t s[440];
+        DWORD e = (capAccum + (capRunning ? GetTickCount() - capT0 : 0)) / 1000; const wchar_t *nm = wcsrchr(capFinal, L'\\'); nm = nm ? nm + 1 : capFinal;
+        COLORREF tc = capRunning ? C_RED : C_ACC;
+        if (capStopping && !capPausing) { wcscpy(s, L"Finalisation du fichier…"); tc = C_ACC; }
+        else if (capPausing) { wcscpy(s, L"Mise en pause…"); tc = C_ACC; }
+        else _snwprintf(s, 439, L"%s   %02lu:%02lu:%02lu\n%s", capRunning ? L"● Enregistrement" : L"⏸ En pause", e / 3600, (e / 60) % 60, e % 60, nm);
+        s[439] = 0; SetBkMode(dc, TRANSPARENT); SetTextColor(dc, tc); SelectObject(dc, fUI); DrawTextW(dc, s, -1, &t, DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS | DT_WORDBREAK);
+        int busyb = capStopping || capPausing;
+        { RECT r = capR[R_PAUSE]; fill(dc, &r, capHover == R_PAUSE && !busyb ? C_TROU : C_HOT); frect(dc, r.left, r.bottom - 2, r.right, r.bottom, busyb ? C_DIM : C_ACC);
+          int cx = r.left + S(28), cy = (r.top + r.bottom) / 2; COLORREF ic = busyb ? C_DIM : C_ACC;
+          if (capRunning) { frect(dc, cx - S(7), cy - S(8), cx - S(2), cy + S(8), ic); frect(dc, cx + S(2), cy - S(8), cx + S(7), cy + S(8), ic); }
+          else { POINT p3[3] = { { cx - S(6), cy - S(9) }, { cx - S(6), cy + S(9) }, { cx + S(8), cy } }; poly(dc, p3, 3, ic); }
+          RECT x = r; x.left += S(50); text(dc, capRunning ? L"Pause" : L"Reprendre", &x, busyb ? C_DIM : C_FG, fUI, DT_LEFT); }
+        { RECT r = capR[R_REC]; int dis = capStopping; fill(dc, &r, capHover == R_REC && !dis ? C_TROU : C_HOT); frect(dc, r.left, r.bottom - 2, r.right, r.bottom, dis ? C_DIM : C_RED);
+          int cx = r.left + S(28), cy = (r.top + r.bottom) / 2; frect(dc, cx - S(7), cy - S(7), cx + S(7), cy + S(7), dis ? C_DIM : C_RED);
+          RECT x = r; x.left += S(50); text(dc, L"Arrêter", &x, dis ? C_DIM : C_FG, fUI, DT_LEFT); }
+        return;
+    }
     int busy = capRunning, pad = S(22); RECT t; wchar_t b[260];
     SetRect(&t, pad, S(14), W - pad, S(34)); text(dc, L"SOURCE", &t, C_DIM, fSmall, DT_LEFT);
     const wchar_t *mn[4] = { L"Écran", L"Zone libre", L"Fenêtre", L"Caméra" };
@@ -2750,7 +2840,7 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_MOUSELEAVE: capHover = -1; InvalidateRect(h, NULL, FALSE); return 0;
     case WM_LBUTTONDOWN: {
         int id = cap_hit(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); if (id < 0) return 0;
-        int locked = capRunning && id != R_REC && id != R_CLOSE;
+        int locked = (capRunning || capPaused) && id != R_REC && id != R_CLOSE && id != R_PAUSE;
         if (locked) return 0;
         switch (id) {
         case R_M0: case R_M1: case R_M2: case R_M3: cc.mode = id - R_M0; cap_save(); if (cc.mode == CM_CAMERA) cam_preview_start(1); else cam_preview_stop(); break;
@@ -2763,7 +2853,8 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case R_MP4: cc.fmt = 1; cap_save(); break;
         case R_OUT: case R_BROWSE: cap_browse(); break;
         case R_DESK: desktop_dir(cc.outdir); cap_save(); break;
-        case R_REC: if (!capRunning) cap_start(); else cap_stop(); break;
+        case R_REC: if (capPaused) cap_finalize(NULL); else if (!capRunning) cap_start(); else cap_stop(); break;
+        case R_PAUSE: if (capPaused) cap_start(); else if (capRunning && !capStopping && !capPausing) { capPausing = 1; cap_stop(); cap_set_status(L"Mise en pause…", C_ACC); } break;
         case R_OPEN: { wchar_t a[MAX_PATH + 20]; _snwprintf(a, MAX_PATH + 19, L"/select,\"%s\"", capLast); a[MAX_PATH + 19] = 0; ShellExecuteW(NULL, L"open", L"explorer.exe", a, NULL, SW_SHOWNORMAL); } break;
         case R_PLAY: if (mpv) { load_file(capLast); ShowWindow(hMain, SW_RESTORE); SetForegroundWindow(hMain); } break;
         case R_CLOSE: SendMessage(h, WM_CLOSE, 0, 0); return 0;
@@ -2778,10 +2869,11 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_CAP_DONE:
         if (capStopThr) { CloseHandle(capStopThr); capStopThr = NULL; }
-        cap_finish(0); if (capCloseAfter) { capCloseAfter = 0; DestroyWindow(h); }
+        cap_finish(0); if (capCloseAfter) { capCloseAfter = 0; if (capPaused) cap_finalize(NULL); DestroyWindow(h); }
         return 0;
     case WM_CLOSE:
-        if (capRunning) { capCloseAfter = 1; cap_stop(); return 0; }
+        if (capRunning) { capCloseAfter = 1; capPausing = 0; cap_stop(); return 0; }
+        if (capPaused) cap_finalize(NULL);
         DestroyWindow(h); return 0;
     case WM_DESTROY: if (!capQuit) cam_preview_stop(); hCap = NULL; return 0;
     }
