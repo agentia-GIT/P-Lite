@@ -109,8 +109,10 @@ static void cmd(const char *a, const char *b, const char *c, const char *d) {
     p_command(mpv, v);
 }
 
+static int camPrev;                                    /* apercu camera en cours dans le lecteur (defini plus bas) */
 static void load_file(const wchar_t *path) {
-    char u[2048]; w8(path, u, sizeof u); chanTitle[0] = 0;
+    char u[2048]; w8(path, u, sizeof u); chanTitle[0] = 0; camPrev = 0;
+    p_set_property_string(mpv, "demuxer-lavf-o", ""); p_set_property_string(mpv, "untimed", "no"); p_set_property_string(mpv, "cache", "auto");   /* remet a zero les reglages de l'apercu camera */
     cmd("loadfile", u, "replace", NULL);
     p_set_property_string(mpv, "pause", "no");
 }
@@ -1465,7 +1467,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.7"
+#define LAV_VERSION L"1.8"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -2108,7 +2110,7 @@ static int install_window(int needMpv, int needFf, int ask) {
 #define WDA_EXCLUDEFROMCAPTURE 0x11
 #endif
 enum { CM_SCREEN, CM_ZONE, CM_WINDOW, CM_CAMERA };
-static wchar_t camDev[160], camUrl[900], camName[120]; static int camType, camSize;       /* camera : peripherique local (DirectShow) ou flux IP */
+static wchar_t camDev[160]; static int camSize, camWaitCfg, capQuit;       /* camera locale (DirectShow) ; camPrev : apercu en cours dans le lecteur (1 = direct, 2 = pendant l'enregistrement) */
 static const wchar_t *CAM_SZ[4] = { L"", L"640x480", L"1280x720", L"1920x1080" };
 typedef struct { int mode, crf, fps, abr, speed, audio, cursor, fmt, syncMs, hasZone; RECT zone; wchar_t outdir[MAX_PATH]; } CapCfg;
 static CapCfg cc = { CM_SCREEN, 26, 30, 160, 1, 1, 1, 0, 0, 0, { 0, 0, 0, 0 }, L"" };
@@ -2138,8 +2140,8 @@ static void desktop_dir(wchar_t *o) { if (FAILED(SHGetFolderPathW(NULL, CSIDL_DE
 static void cap_load(void) {
     wchar_t p[MAX_PATH]; cap_ini_path(p);
     cc.mode = clampi(ini_i(L"mode", 0), 0, 3);
-    camType = ini_i(L"cam_type", 0) ? 1 : 0; camSize = clampi(ini_i(L"cam_taille", 0), 0, 3);
-    GetPrivateProfileStringW(L"capture", L"cam_peripherique", L"", camDev, 160, p); GetPrivateProfileStringW(L"capture", L"cam_url", L"", camUrl, 900, p); GetPrivateProfileStringW(L"capture", L"cam_nom", L"", camName, 120, p);
+    camSize = clampi(ini_i(L"cam_taille", 0), 0, 3);
+    GetPrivateProfileStringW(L"capture", L"cam_peripherique", L"", camDev, 160, p);
     cc.crf = clampi(ini_i(L"crf", 26), 18, 34);
     cc.fps = clampi((ini_i(L"fps", 30) + 2) / 5 * 5, 10, 60);
     cc.abr = clampi(ini_i(L"audio_kbps", 160) / 16 * 16, 64, 320);
@@ -2157,8 +2159,9 @@ static void cap_save(void) {
     ini_si(L"mode", cc.mode); ini_si(L"crf", cc.crf); ini_si(L"fps", cc.fps); ini_si(L"audio_kbps", cc.abr); ini_si(L"vitesse", cc.speed);
     ini_si(L"son_pc", cc.audio); ini_si(L"curseur", cc.cursor); ini_si(L"format", cc.fmt); ini_si(L"decalage_audio_ms", cc.syncMs);
     ini_si(L"zone_ok", cc.hasZone); ini_si(L"zone_g", cc.zone.left); ini_si(L"zone_h", cc.zone.top); ini_si(L"zone_d", cc.zone.right); ini_si(L"zone_b", cc.zone.bottom);
-    ini_si(L"cam_type", camType); ini_si(L"cam_taille", camSize);
-    WritePrivateProfileStringW(L"capture", L"cam_peripherique", camDev, p); WritePrivateProfileStringW(L"capture", L"cam_url", camUrl, p); WritePrivateProfileStringW(L"capture", L"cam_nom", camName, p);
+    ini_si(L"cam_taille", camSize);
+    WritePrivateProfileStringW(L"capture", L"cam_peripherique", camDev, p);
+    WritePrivateProfileStringW(L"capture", L"cam_type", NULL, p); WritePrivateProfileStringW(L"capture", L"cam_url", NULL, p); WritePrivateProfileStringW(L"capture", L"cam_nom", NULL, p);   /* anciennes cles (camera IP supprimee) */
     WritePrivateProfileStringW(L"capture", L"dossier", cc.outdir, p);
 }
 
@@ -2386,6 +2389,32 @@ static DWORD WINAPI cap_err_thread(LPVOID a) {
     return 0;
 }
 
+#define CAM_PORT() (20000 + (int)(GetCurrentProcessId() % 20000))
+static void cam_play(const char *url, const char *lavf, const wchar_t *title) {     /* lit un flux de faible latence dans le lecteur */
+    if (!mpv) return;
+    p_set_property_string(mpv, "demuxer-lavf-o", lavf); p_set_property_string(mpv, "untimed", "yes"); p_set_property_string(mpv, "cache", "no");
+    chanTitle[0] = 0; cmd("loadfile", url, "replace", NULL); p_set_property_string(mpv, "pause", "no");
+    if (hMain) { if (IsIconic(hMain)) ShowWindow(hMain, SW_RESTORE); SetWindowTextW(hMain, title); }
+}
+static void cam_preview_stop(void) {
+    if (!camPrev) return;
+    camPrev = 0; cmd("stop", NULL, NULL, NULL); playing = 0; viz_update(1); do_layout(); gPos = gDur = -1; nAud = nSub = 0;
+    InvalidateRect(hVideo, NULL, TRUE); SetWindowTextW(hMain, L"Lecteur A/V");
+}
+static void cam_preview_start(int status) {              /* apercu direct de la camera (DirectShow) dans la fenetre du lecteur */
+    if (capRunning || !camDev[0] || capQuit) return;
+    char n[400], url[500], lf[160], sz[24] = ""; w8(camDev, n, sizeof n);
+    if (camSize) w8(CAM_SZ[camSize], sz, sizeof sz);
+    snprintf(url, sizeof url, "av://dshow:video=%s", n);
+    snprintf(lf, sizeof lf, "rtbufsize=32M%s%s", sz[0] ? ",video_size=" : "", sz);
+    cam_play(url, lf, L"Aperçu caméra — Lecteur A/V"); camPrev = 1;
+    if (status) cap_set_status(L"Aperçu de la caméra dans le lecteur. Cliquez sur Enregistrer pour filmer.", C_ACC);
+}
+static void cam_preview_udp(void) {                      /* pendant l'enregistrement : FFmpeg renvoie un flux d'apercu en local */
+    char url[100]; snprintf(url, sizeof url, "udp://127.0.0.1:%d?fifo_size=1000000&overrun_nonfatal=1", CAM_PORT());
+    cam_play(url, "fflags=+nobuffer,analyzeduration=300000,probesize=200000", L"Caméra (enregistrement) — Lecteur A/V"); camPrev = 2;
+}
+
 static void cap_free_events(void) {
     if (aEvInit) { CloseHandle(aEvInit); aEvInit = NULL; } if (aEvGo) { CloseHandle(aEvGo); aEvGo = NULL; } if (evStop) { CloseHandle(evStop); evStop = NULL; }
 }
@@ -2395,7 +2424,7 @@ static void cap_start(void) {
     RECT rg; int useAudio = cc.audio;
     if (!csInit) { InitializeCriticalSection(&csErr); csInit = 1; }
     if (!ff_present()) { cap_set_status(L"FFmpeg introuvable dans le dossier codec (Paramètres > FFmpeg).", C_RED); return; }
-    if (cc.mode == CM_CAMERA && ((camType == 0 && !camDev[0]) || (camType == 1 && !camUrl[0]))) { cap_set_status(L"Choisissez d'abord une caméra (locale ou IP).", C_RED); return; }
+    if (cc.mode == CM_CAMERA && !camDev[0]) { cap_set_status(L"Choisissez d'abord une caméra.", C_RED); return; }
     if (!cap_region(&rg, err)) { cap_set_status(err, C_RED); return; }
     if (!dir_exists(cc.outdir) && !CreateDirectoryW(cc.outdir, NULL)) desktop_dir(cc.outdir);
     SYSTEMTIME st; GetLocalTime(&st);
@@ -2418,6 +2447,7 @@ static void cap_start(void) {
         }
     }
     static const wchar_t *PRE[4] = { L"ultrafast", L"superfast", L"veryfast", L"faster" };
+    if (cc.mode == CM_CAMERA && camPrev) { cam_preview_stop(); Sleep(400); }     /* la camera DirectShow ne peut pas etre ouverte deux fois : on libere l'apercu direct */
     if (useAudio) {
         _snwprintf(ain, 419, L"-thread_queue_size 1024 -f %s -ar %d -ac %d -i %s ", aInfo.fmt, aInfo.rate, aInfo.ch, capPipeName); ain[419] = 0;
         _snwprintf(aout, 119, L"-c:a aac -b:a %dk -ac 2 -ar 48000 ", cc.abr); aout[119] = 0;
@@ -2426,17 +2456,19 @@ static void cap_start(void) {
     wchar_t vin[1500], vf[80] = L"";
     if (cc.mode == CM_CAMERA) {
         wcscpy(vf, L"-vf scale=trunc(iw/2)*2:trunc(ih/2)*2 ");                                 /* dimensions paires pour yuv420p */
-        if (camType == 0) _snwprintf(vin, 1499, L"-thread_queue_size 1024 -f dshow -rtbufsize 256M -framerate %d %s%s%s-i video=\"%s\" ", cc.fps,
-                                     camSize ? L"-video_size " : L"", camSize ? CAM_SZ[camSize] : L"", camSize ? L" " : L"", camDev);
-        else _snwprintf(vin, 1499, L"-thread_queue_size 1024 %s-use_wallclock_as_timestamps 1 -i \"%s\" ", !_wcsnicmp(camUrl, L"rtsp", 4) ? L"-rtsp_transport tcp " : L"", camUrl);
+        _snwprintf(vin, 1499, L"-thread_queue_size 1024 -f dshow -rtbufsize 256M -framerate %d %s%s%s-i video=\"%s\" ", cc.fps,
+                   camSize ? L"-video_size " : L"", camSize ? CAM_SZ[camSize] : L"", camSize ? L" " : L"", camDev);
     } else
         _snwprintf(vin, 1499, L"-thread_queue_size 1024 -f gdigrab -framerate %d -draw_mouse %d -offset_x %d -offset_y %d -video_size %dx%d -rtbufsize 256M -i desktop ",
                    cc.fps, cc.cursor ? 1 : 0, (int)rg.left, (int)rg.top, (int)(rg.right - rg.left), (int)(rg.bottom - rg.top));
     vin[1499] = 0;
+    wchar_t pv[400] = L"";
+    if (cc.mode == CM_CAMERA) _snwprintf(pv, 399, L" -map %d:v -an -vf scale=640:-2 -pix_fmt yuv420p -r 15 -c:v mpeg2video -q:v 6 -g 15 -bf 0 -f mpegts \"udp://127.0.0.1:%d?pkt_size=1316\"", useAudio ? 1 : 0, CAM_PORT());   /* 2e sortie : apercu pour le lecteur */
+    pv[399] = 0;
     _snwprintf(cl, 3999,
         L"\"%s\" -hide_banner -y -loglevel warning -nostats %s%s"
-        L"-map %d:v %s%s-c:v libx265 -preset %s -crf %d -pix_fmt yuv420p -x265-params log-level=error %s-fps_mode cfr -r %d %s\"%s\"",
-        ffp, ain, vin, useAudio ? 1 : 0, useAudio ? L"-map 0:a " : L"", vf, PRE[cc.speed], cc.crf, cc.fmt ? L"-tag:v hvc1 " : L"", cc.fps, aout, capCurOut);
+        L"-map %d:v %s%s-c:v libx265 -preset %s -crf %d -pix_fmt yuv420p -x265-params log-level=error %s-fps_mode cfr -r %d %s\"%s\"%s",
+        ffp, ain, vin, useAudio ? 1 : 0, useAudio ? L"-map 0:a " : L"", vf, PRE[cc.speed], cc.crf, cc.fmt ? L"-tag:v hvc1 " : L"", cc.fps, aout, capCurOut, pv);
     cl[3999] = 0;
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE }; HANDLE inR = NULL, inW = NULL, erR = NULL, erW = NULL;
     if (!CreatePipe(&inR, &inW, &sa, 0) || !CreatePipe(&erR, &erW, &sa, 0)) { cap_set_status(L"Impossible de créer les tubes de communication.", C_RED); audio_stop(); cap_free_events(); return; }
@@ -2447,6 +2479,7 @@ static void cap_start(void) {
     CloseHandle(inR); CloseHandle(erW);
     if (!ok) { CloseHandle(inW); CloseHandle(erR); audio_stop(); cap_free_events(); cap_set_status(L"Impossible de lancer FFmpeg.", C_RED); return; }
     CloseHandle(pi.hThread); capProc = pi.hProcess; capIn = inW; capErrR = erR; capErr[0] = 0;
+    if (cc.mode == CM_CAMERA) cam_preview_udp();
     capErrThr = CreateThread(NULL, 0, cap_err_thread, NULL, 0, NULL);
     if (useAudio) SetEvent(aEvGo);
     capRunning = 1; capStopping = 0; capT0 = GetTickCount(); capLast[0] = 0;
@@ -2493,10 +2526,13 @@ static void cap_finish(int fromError) {
         m[419] = 0; cap_set_status(m, C_RED); (void)fromError;
     }
     if (hCap) { SetWindowDisplayAffinity(hCap, 0); InvalidateRect(hCap, NULL, FALSE); }
+    if (camPrev == 2) cam_preview_stop();
+    if (hCap && !capCloseAfter && !capQuit && cc.mode == CM_CAMERA) cam_preview_start(1);   /* retour a l'apercu direct */
     inval();
 }
 
 static void cap_shutdown(void) {              /* fermeture du lecteur pendant un enregistrement : on termine proprement le fichier */
+    capQuit = 1;
     if (!capRunning || !capProc) return;
     if (capStopThr) WaitForSingleObject(capStopThr, 35000);
     else { DWORD w; if (capIn) WriteFile(capIn, "q", 1, &w, NULL); capStopping = 1; audio_stop(); if (WaitForSingleObject(capProc, 30000) != WAIT_OBJECT_0) TerminateProcess(capProc, 1); }
@@ -2532,6 +2568,7 @@ static void cap_layout(void) {
     for (int i = 0; i < 4; i++) SetRect(&capR[R_M0 + i], x0 + i * (tw + g), S(38), x0 + i * (tw + g) + tw, S(74));
     y = S(84);
     if (cc.mode == CM_ZONE) { SetRect(&capR[R_TARGET], x0, y, x1 - S(156), y + S(34)); SetRect(&capR[R_ZONE], x1 - S(150), y, x1, y + S(34)); }
+    else if (cc.mode == CM_CAMERA) { SetRect(&capR[R_TARGET], x0, y, x1 - S(206), y + S(34)); SetRect(&capR[R_ZONE], x1 - S(200), y, x1, y + S(34)); }
     else { SetRect(&capR[R_TARGET], x0, y, x1, y + S(34)); SetRectEmpty(&capR[R_ZONE]); }
     for (int k = 0; k < 4; k++) { int yy = S(158) + k * S(40); SetRect(&capR[R_S0 + k], x0 + S(190), yy + S(10), x1 - S(176), yy + S(26)); }
     int ow = (x1 - x0 - 3 * g) / 4; y = S(330);
@@ -2558,11 +2595,7 @@ static int cap_target_text(wchar_t *o) {                  /* renvoie 1 si c'est 
         _snwprintf(o, 199, L"Zone : %d × %d px   à (%d, %d)", (int)(cc.zone.right - cc.zone.left), (int)(cc.zone.bottom - cc.zone.top), (int)cc.zone.left, (int)cc.zone.top); o[199] = 0; return 0;
     }
     if (cc.mode == CM_CAMERA) {
-        if (camType == 0) { if (!camDev[0]) { wcscpy(o, L"Choisir une caméra…"); return 1; } _snwprintf(o, 199, L"Caméra locale : %s", camDev); o[199] = 0; return 0; }
-        if (!camUrl[0]) { wcscpy(o, L"Choisir une caméra…"); return 1; }
-        { const wchar_t *u = camUrl, *sc = wcsstr(u, L"://"), *at = sc ? wcschr(sc + 3, L'@') : NULL, *sl = sc ? wcschr(sc + 3, L'/') : NULL;   /* identifiants masques */
-          if (at && (!sl || at < sl)) u = at + 1; else if (sc) u = sc + 3;
-          if (camName[0]) _snwprintf(o, 199, L"Caméra IP : %s  (%s)", camName, u); else _snwprintf(o, 199, L"Caméra IP : %s", u); o[199] = 0; return 0; }
+        if (!camDev[0]) { wcscpy(o, L"Choisir une caméra…"); return 1; } _snwprintf(o, 199, L"Caméra : %s", camDev); o[199] = 0; return 0;
     }
     if (capWin && IsWindow(capWin)) { GetWindowTextW(capWin, o, 190); return 0; }
     wcscpy(o, L"Choisir une fenêtre…"); return 1;
@@ -2593,6 +2626,7 @@ static void cap_paint(HDC dc, int W, int H) {
     for (int i = 0; i < 4; i++) cap_tog(dc, R_M0 + i, mn[i], cc.mode == i, 0, busy);
     int dim = cap_target_text(b);
     if (cc.mode == CM_ZONE) { cap_chip(dc, R_TARGET, b, dim, busy, 0); cap_tog(dc, R_ZONE, L"Choisir la zone…", 0, 0, busy); }
+    else if (cc.mode == CM_CAMERA) { cap_chip(dc, R_TARGET, b, dim, busy, 1); cap_tog(dc, R_ZONE, L"Configurer la caméra", 0, 0, busy); }
     else cap_chip(dc, R_TARGET, b, dim, busy, 1);
     SetRect(&t, pad, S(134), W - pad, S(154)); text(dc, L"QUALITÉ", &t, C_DIM, fSmall, DT_LEFT);
     for (int k = 0; k < 4; k++) {
@@ -2662,26 +2696,21 @@ static int cam_list(void) {
 }
 static void cap_camera_menu(void) {
     cam_list(); HMENU m = CreatePopupMenu(), sz = CreatePopupMenu();
-    if (!nCam) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Aucune caméra locale détectée");
-    for (int i = 0; i < nCam; i++) { wchar_t e[130]; esc_amp(camL[i].n, e, 130); AppendMenuW(m, MF_STRING | (camType == 0 && !wcscmp(camDev, camL[i].n) ? MF_CHECKED : 0), 500 + i, e); }
+    if (!nCam) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Aucune caméra détectée");
+    for (int i = 0; i < nCam; i++) { wchar_t e[130]; esc_amp(camL[i].n, e, 130); AppendMenuW(m, MF_STRING | (!wcscmp(camDev, camL[i].n) ? MF_CHECKED : 0), 500 + i, e); }
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(m, MF_STRING | (camType == 1 && camUrl[0] ? MF_CHECKED : 0), 490, L"Caméra IP / réseau (adresse)…");
     for (int i = 0; i < 4; i++) AppendMenuW(sz, MF_STRING | (camSize == i ? MF_CHECKED : 0), 480 + i, i ? CAM_SZ[i] : L"Automatique");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)sz, L"Résolution (caméra locale)");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)sz, L"Résolution");
     POINT p = { capR[R_TARGET].left, capR[R_TARGET].bottom }; ClientToScreen(hCap, &p);
     int c = TrackPopupMenu(m, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, p.x, p.y, 0, hCap, NULL); DestroyMenu(m);
-    if (c >= 500 && c < 500 + nCam) { wcscpy(camDev, camL[c - 500].n); camType = 0; cap_save(); }
-    else if (c >= 480 && c <= 483) { camSize = c - 480; cap_save(); }
-    else if (c == 490) {
-        dlgOwner = hCap; wcscpy(dlgPreName, camName); wcscpy(dlgPreUrl, camUrl);
-        int ok = ask_entry(L"Caméra IP / réseau", L"Nom de la caméra  (facultatif)", L"Adresse du flux  (rtsp://utilisateur:mot_de_passe@192.168.1.20:554/flux, http://…/video, rtmp://…)",
-                           L"Les identifiants éventuels sont enregistrés dans capture.ini.", L"Utiliser");
-        dlgOwner = NULL;
-        if (ok && dlgUrl[0]) {
-            if (wcschr(dlgUrl, L'"')) MessageBoxW(hCap, L"L'adresse ne doit pas contenir de guillemets.", L"Capture", MB_ICONERROR);
-            else { wcsncpy(camUrl, dlgUrl, 899); camUrl[899] = 0; wcsncpy(camName, dlgName, 119); camName[119] = 0; camType = 1; cap_save(); }
-        }
-    }
+    if (c >= 500 && c < 500 + nCam) { wcscpy(camDev, camL[c - 500].n); cap_save(); cam_preview_start(1); }
+    else if (c >= 480 && c <= 483) { camSize = c - 480; cap_save(); cam_preview_start(1); }
+}
+static void cam_configure(void) {                 /* ouvre l'application Caméra de Windows (reglages, luminosite, etc.) */
+    if (camPrev) { cam_preview_stop(); camWaitCfg = 1; }                       /* on libere la camera pour l'application ; l'apercu reprend au retour sur cette fenetre */
+    HINSTANCE r = ShellExecuteW(hCap, L"open", L"microsoft.windows.camera:", NULL, NULL, SW_SHOWNORMAL);
+    if ((INT_PTR)r <= 32) r = ShellExecuteW(hCap, L"open", L"ms-settings:camera", NULL, NULL, SW_SHOWNORMAL);
+    if ((INT_PTR)r <= 32) { camWaitCfg = 0; cap_set_status(L"Impossible d'ouvrir l'application Caméra de Windows.", C_RED); cam_preview_start(1); }
 }
 static void cap_browse(void) {
     BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = hCap; bi.lpszTitle = L"Dossier de sortie des captures"; bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
@@ -2708,9 +2737,9 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         int locked = capRunning && id != R_REC && id != R_CLOSE;
         if (locked) return 0;
         switch (id) {
-        case R_M0: case R_M1: case R_M2: case R_M3: cc.mode = id - R_M0; cap_save(); break;
+        case R_M0: case R_M1: case R_M2: case R_M3: cc.mode = id - R_M0; cap_save(); if (cc.mode == CM_CAMERA) cam_preview_start(1); else cam_preview_stop(); break;
         case R_TARGET: if (cc.mode == CM_SCREEN) cap_screen_menu(); else if (cc.mode == CM_WINDOW) cap_window_menu(); else if (cc.mode == CM_CAMERA) cap_camera_menu(); else cap_pick_zone(); break;
-        case R_ZONE: cap_pick_zone(); break;
+        case R_ZONE: if (cc.mode == CM_CAMERA) cam_configure(); else cap_pick_zone(); break;
         case R_S0: case R_S1: case R_S2: case R_S3: capDrag = id - R_S0; SetCapture(h); sld_set(capDrag, GET_X_LPARAM(lp)); break;
         case R_AUD: cc.audio = !cc.audio; cap_save(); break;
         case R_CUR: if (cc.mode != CM_CAMERA) { cc.cursor = !cc.cursor; cap_save(); } break;
@@ -2738,7 +2767,8 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_CLOSE:
         if (capRunning) { capCloseAfter = 1; cap_stop(); return 0; }
         DestroyWindow(h); return 0;
-    case WM_DESTROY: hCap = NULL; return 0;
+    case WM_ACTIVATE: if (LOWORD(wp) != WA_INACTIVE && camWaitCfg) { camWaitCfg = 0; if (cc.mode == CM_CAMERA && !capRunning) cam_preview_start(1); } return 0;
+    case WM_DESTROY: if (!capQuit) cam_preview_stop(); hCap = NULL; return 0;
     }
     return DefWindowProc(h, m, wp, lp);
 }
@@ -2758,6 +2788,7 @@ static void capture_window(void) {
     BOOL dark = TRUE; HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
     if (dwm) { HRESULT (WINAPI *f)(HWND, DWORD, LPCVOID, DWORD) = (void *)GetProcAddress(dwm, "DwmSetWindowAttribute"); if (f) { f(hCap, 20, &dark, sizeof dark); f(hCap, 19, &dark, sizeof dark); } }
     ShowWindow(hCap, SW_SHOW); SetForegroundWindow(hCap);
+    if (cc.mode == CM_CAMERA && camDev[0]) cam_preview_start(1);
 }
 
 static int install_window(int needMpv, int needFf, int ask);
@@ -3233,7 +3264,7 @@ static LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case H_VOL: dragVol = 1; SetCapture(h); set_vol_x(x); InvalidateRect(h, NULL, FALSE); break;
         case H_OPEN: open_dialog(); break;
         case H_PLAY: toggle_pause(); break;
-        case H_STOP: cmd("stop", NULL, NULL, NULL); playing = 0; viz_update(1); do_layout(); gPos = gDur = -1; nAud = nSub = 0; InvalidateRect(hVideo, NULL, TRUE); InvalidateRect(h, NULL, FALSE); break;
+        case H_STOP: cmd("stop", NULL, NULL, NULL); camPrev = 0; playing = 0; viz_update(1); do_layout(); gPos = gDur = -1; nAud = nSub = 0; InvalidateRect(hVideo, NULL, TRUE); InvalidateRect(h, NULL, FALSE); break;
         case H_FS: toggle_fs(); break;
         case H_TOG: toggle_tracks(); break;
         case H_AUD: pick_menu(1); break;
