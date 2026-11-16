@@ -1468,7 +1468,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.14"
+#define LAV_VERSION L"1.15"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -2648,6 +2648,31 @@ static void cap_do_pause(void) {
     else if (capRunning && !capStopping && !capPausing) { capPausing = 1; cap_stop(); cap_set_status(L"Mise en pause…", C_ACC); }
 }
 static void cap_do_stop(void) { if (capPaused) cap_finalize(NULL); else if (capRunning) cap_stop(); }
+/* ----- infobulles des boutons du controleur ----- */
+static HWND hTip; static int capPosSet;
+#define TIPSZ ((UINT)offsetof(TOOLINFOW, lpReserved))
+static void tip_init(void) {
+    if (hTip || !hCap) return;
+    hTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hCap, NULL, hInst, NULL);
+    if (!hTip) return;
+    SendMessage(hTip, TTM_SETMAXTIPWIDTH, 0, 300); SendMessage(hTip, TTM_SETDELAYTIME, TTDT_INITIAL, 350);
+    for (int k = 0; k < 2; k++) {
+        TOOLINFOW ti; memset(&ti, 0, sizeof ti); ti.cbSize = TIPSZ; ti.uFlags = TTF_SUBCLASS; ti.hwnd = hCap; ti.uId = k == 0 ? R_PAUSE : R_REC; ti.lpszText = LPSTR_TEXTCALLBACKW;
+        SetRect(&ti.rect, 0, 0, 0, 0); SendMessage(hTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+    }
+}
+static void tip_rects(void) {                       /* appele a chaque mise en page : les zones suivent les boutons (vides hors enregistrement) */
+    if (!hTip) tip_init(); if (!hTip) return;
+    for (int k = 0; k < 2; k++) {
+        TOOLINFOW ti; memset(&ti, 0, sizeof ti); ti.cbSize = TIPSZ; ti.hwnd = hCap; ti.uId = k == 0 ? R_PAUSE : R_REC;
+        ti.rect = (capRunning || capPaused) ? capR[ti.uId] : (RECT){ 0, 0, 0, 0 }; SendMessage(hTip, TTM_NEWTOOLRECTW, 0, (LPARAM)&ti);
+    }
+}
+static const wchar_t *tip_text(int id) {
+    if (id == R_PAUSE) return capPaused ? L"Reprendre l'enregistrement" : L"Mettre l'enregistrement en pause";
+    if (id == R_REC) return capPaused ? L"Terminer et enregistrer le fichier" : L"Arrêter l'enregistrement";
+    return L"";
+}
 static void cap_apply_size(void) {                 /* fenetre complete, ou barre de controle compacte (temps + pause/reprise + arret) pendant l'enregistrement */
     if (!hCap) return;
     int comp = capRunning || capPaused, cw = comp ? S(CAP_CW) : S(CAP_W), ch = comp ? S(CAP_CH) : S(CAP_H);
@@ -2655,7 +2680,13 @@ static void cap_apply_size(void) {                 /* fenetre complete, ou barre
     if (IsIconic(hCap)) ShowWindow(hCap, SW_RESTORE);
     RECT r = { 0, 0, cw, ch }; AdjustWindowRectEx(&r, (DWORD)GetWindowLongPtr(hCap, GWL_STYLE), FALSE, 0);
     RECT wr; GetWindowRect(hCap, &wr); int w = r.right - r.left, h = r.bottom - r.top, x = wr.left, y = wr.top;
-    MONITORINFO mi = { sizeof mi }; if (GetMonitorInfo(MonitorFromWindow(hCap, MONITOR_DEFAULTTONEAREST), &mi)) {
+    MONITORINFO mi = { sizeof mi }; int haveMi = GetMonitorInfo(MonitorFromWindow(hMain, MONITOR_DEFAULTTONEAREST), &mi);
+    if (comp && !capPosSet && hMain && !IsIconic(hMain)) {          /* par defaut : sous la fenetre principale, a gauche (sinon a l'interieur, en bas a gauche) */
+        RECT mr; GetWindowRect(hMain, &mr); x = mr.left; y = mr.bottom;
+        if (haveMi && y + h > mi.rcWork.bottom) y = mr.bottom - h - S(8);
+    }
+    if (comp) capPosSet = 1; else capPosSet = 0;
+    if (haveMi) {
         if (x + w > mi.rcWork.right) x = mi.rcWork.right - w; if (y + h > mi.rcWork.bottom) y = mi.rcWork.bottom - h;
         if (x < mi.rcWork.left) x = mi.rcWork.left; if (y < mi.rcWork.top) y = mi.rcWork.top; }
     SetWindowPos(hCap, comp ? HWND_TOPMOST : HWND_NOTOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -2686,7 +2717,7 @@ static void cap_layout(void) {
         RECT cr; GetClientRect(hCap, &cr); for (int i = 0; i < R_N; i++) SetRectEmpty(&capR[i]);
         int bw = S(34), bh = S(30), y = (cr.bottom - bh) / 2, g = S(4), p = S(8);
         SetRect(&capR[R_REC], cr.right - p - bw, y, cr.right - p, y + bh); SetRect(&capR[R_PAUSE], capR[R_REC].left - g - bw, y, capR[R_REC].left - g, y + bh);
-        return;
+        tip_rects(); return;
     }
     int W = S(CAP_W), pad = S(22), g = S(6), x0 = pad, x1 = W - pad, y, tw = (x1 - x0 - 3 * g) / 4;
     for (int i = 0; i < 4; i++) SetRect(&capR[R_M0 + i], x0 + i * (tw + g), S(38), x0 + i * (tw + g) + tw, S(74));
@@ -2701,6 +2732,7 @@ static void cap_layout(void) {
     y = S(512); SetRect(&capR[R_REC], x0, y, x0 + S(210), y + S(40)); SetRect(&capR[R_CLOSE], x1 - S(110), y, x1, y + S(40));
     if (capLast[0] && !capRunning) { SetRect(&capR[R_PLAY], capR[R_CLOSE].left - g - S(90), y, capR[R_CLOSE].left - g, y + S(40)); SetRect(&capR[R_OPEN], capR[R_PLAY].left - g - S(150), y, capR[R_PLAY].left - g, y + S(40)); }
     else { SetRectEmpty(&capR[R_PLAY]); SetRectEmpty(&capR[R_OPEN]); }
+    tip_rects();
 }
 static int cap_hit(int x, int y) {
     POINT p = { x, y };
@@ -2898,7 +2930,8 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (capRunning) { capCloseAfter = 1; capPausing = 0; cap_stop(); return 0; }
         if (capPaused) cap_finalize(NULL);
         DestroyWindow(h); return 0;
-    case WM_DESTROY: if (!capQuit) cam_preview_stop(); if (hFrame) { DestroyWindow(hFrame); hFrame = NULL; } hCap = NULL; return 0;
+    case WM_NOTIFY: { NMHDR *n = (NMHDR *)lp; if (n->code == TTN_GETDISPINFOW) { NMTTDISPINFOW *d = (NMTTDISPINFOW *)lp; d->lpszText = (LPWSTR)tip_text((int)n->idFrom); d->hinst = NULL; } return 0; }
+    case WM_DESTROY: if (!capQuit) cam_preview_stop(); hTip = NULL; if (hFrame) { DestroyWindow(hFrame); hFrame = NULL; } hCap = NULL; return 0;
     }
     return DefWindowProc(h, m, wp, lp);
 }
@@ -3582,7 +3615,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cl, int sw) {
     wc.lpfnWndProc = VideoProc; wc.lpszClassName = L"LavVideo"; RegisterClassW(&wc);
     wc.style = CS_DBLCLKS; wc.lpfnWndProc = VizProc; wc.lpszClassName = L"LavViz"; RegisterClassW(&wc); wc.style = 0;
 
-    { INITCOMMONCONTROLSEX icc = { sizeof icc, ICC_LISTVIEW_CLASSES }; InitCommonControlsEx(&icc); }
+    { INITCOMMONCONTROLSEX icc = { sizeof icc, ICC_LISTVIEW_CLASSES | ICC_WIN95_CLASSES }; InitCommonControlsEx(&icc); }
     iptv_init_dir(); load_sel();
     hMain = CreateWindowExW(WS_EX_ACCEPTFILES, L"LavMain", L"Lecteur A/V", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                             CW_USEDEFAULT, CW_USEDEFAULT, 1100, 700, NULL, NULL, hi, NULL);
