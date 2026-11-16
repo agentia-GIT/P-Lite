@@ -1468,7 +1468,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.12"
+#define LAV_VERSION L"1.13"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -2515,8 +2515,7 @@ static void cap_start(void) {
     if (useAudio) SetEvent(aEvGo);
     capRunning = 1; capPaused = 0; capPausing = 0; capStopping = 0; capT0 = GetTickCount();
     cap_set_status(L"● Enregistrement en cours…", C_RED);
-    if (!SetWindowDisplayAffinity(hCap, WDA_EXCLUDEFROMCAPTURE) && fresh) ShowWindow(hCap, SW_MINIMIZE);    /* anciens Windows : la fenetre ne peut pas etre masquee de la capture */
-    else cap_apply_size();                                                                                   /* fenetre reduite aux boutons de controle */
+    (void)fresh; cap_apply_size();                                                                           /* fenetre de capture masquee, mini fenetre de controle affichee */
     SetTimer(hCap, 2, 500, NULL); inval();
 }
 
@@ -2622,17 +2621,91 @@ static RECT capR[R_N];
 #define CAP_H 568
 #define CAP_CW 380
 #define CAP_CH 150
-static void cap_apply_size(void) {                 /* fenetre complete, ou reduite aux boutons de controle pendant l'enregistrement */
-    if (!hCap || IsIconic(hCap)) return;
-    int comp = capRunning || capPaused, cw = comp ? S(CAP_CW) : S(CAP_W), ch = comp ? S(CAP_CH) : S(CAP_H);
-    RECT r = { 0, 0, cw, ch }; AdjustWindowRectEx(&r, (DWORD)GetWindowLongPtr(hCap, GWL_STYLE), FALSE, 0);
+/* ----- mini fenetre de controle independante (visible pendant l'enregistrement) ----- */
+static HWND hMini; static int miniHover = -1, miniHas; static POINT miniPos;
+#define MINI_W 320
+#define MINI_H 62
+static void cap_do_pause(void) {
+    if (capPaused) cap_start();
+    else if (capRunning && !capStopping && !capPausing) { capPausing = 1; cap_stop(); cap_set_status(L"Mise en pause…", C_ACC); }
+}
+static void cap_do_stop(void) { if (capPaused) cap_finalize(NULL); else if (capRunning) cap_stop(); }
+static void mini_rects(RECT *bp, RECT *bs) {
+    RECT c; GetClientRect(hMini, &c); int g = S(6), p = S(8), bw = S(84), y0 = p, y1 = c.bottom - p;
+    SetRect(bs, c.right - p - bw, y0, c.right - p, y1); SetRect(bp, bs->left - g - S(104), y0, bs->left - g, y1);
+}
+static LRESULT CALLBACK MiniProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    case WM_NCHITTEST: {
+        LRESULT r = DefWindowProc(h, m, wp, lp); if (r != HTCLIENT) return r;
+        POINT p = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) }; ScreenToClient(h, &p); RECT a, b; mini_rects(&a, &b);
+        return (PtInRect(&a, p) || PtInRect(&b, p)) ? HTCLIENT : HTCAPTION; }                /* glisser la mini fenetre par son fond */
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT rc; GetClientRect(h, &rc);
+        HDC md = CreateCompatibleDC(dc); HBITMAP bm = CreateCompatibleBitmap(dc, rc.right, rc.bottom); HGDIOBJ old = SelectObject(md, bm);
+        RECT all = rc; fill(md, &all, C_BAR); frect(md, 0, 0, rc.right, S(2), capRunning ? C_RED : C_ACC);
+        RECT a, b; mini_rects(&a, &b); int busyb = capStopping || capPausing;
+        DWORD e = (capAccum + (capRunning ? GetTickCount() - capT0 : 0)) / 1000; wchar_t s1[80];
+        if (capStopping && !capPausing) wcscpy(s1, L"Finalisation…"); else if (capPausing) wcscpy(s1, L"Mise en pause…");
+        else _snwprintf(s1, 79, L"%s %02lu:%02lu:%02lu", capRunning ? L"●" : L"⏸", e / 3600, (e / 60) % 60, e % 60);
+        s1[79] = 0; RECT tr = { S(12), 0, a.left - S(6), rc.bottom }; text(md, s1, &tr, capRunning && !busyb ? C_RED : C_ACC, fUI, DT_LEFT);
+        fill(md, &a, miniHover == 0 && !busyb ? C_TROU : C_HOT); frect(md, a.left, a.bottom - 2, a.right, a.bottom, busyb ? C_DIM : C_ACC);
+        { int cx = a.left + S(18), cy = (a.top + a.bottom) / 2; COLORREF ic = busyb ? C_DIM : C_ACC;
+          if (capRunning) { frect(md, cx - S(6), cy - S(7), cx - S(2), cy + S(7), ic); frect(md, cx + S(2), cy - S(7), cx + S(6), cy + S(7), ic); }
+          else { POINT p3[3] = { { cx - S(5), cy - S(8) }, { cx - S(5), cy + S(8) }, { cx + S(7), cy } }; poly(md, p3, 3, ic); }
+          RECT x = a; x.left += S(34); text(md, capRunning ? L"Pause" : L"Reprendre", &x, busyb ? C_DIM : C_FG, fUI, DT_LEFT); }
+        fill(md, &b, miniHover == 1 && !capStopping ? C_TROU : C_HOT); frect(md, b.left, b.bottom - 2, b.right, b.bottom, capStopping ? C_DIM : C_RED);
+        { int cx = b.left + S(18), cy = (b.top + b.bottom) / 2; frect(md, cx - S(6), cy - S(6), cx + S(6), cy + S(6), capStopping ? C_DIM : C_RED);
+          RECT x = b; x.left += S(32); text(md, L"Arrêter", &x, capStopping ? C_DIM : C_FG, fUI, DT_LEFT); }
+        BitBlt(dc, 0, 0, rc.right, rc.bottom, md, 0, 0, SRCCOPY); SelectObject(md, old); DeleteObject(bm); DeleteDC(md); EndPaint(h, &ps); return 0; }
+    case WM_MOUSEMOVE: {
+        POINT p = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) }; RECT a, b; mini_rects(&a, &b);
+        int nh = PtInRect(&a, p) ? 0 : PtInRect(&b, p) ? 1 : -1; if (nh != miniHover) { miniHover = nh; InvalidateRect(h, NULL, FALSE); }
+        TRACKMOUSEEVENT t = { sizeof t, TME_LEAVE, h, 0 }; TrackMouseEvent(&t); return 0; }
+    case WM_MOUSELEAVE: miniHover = -1; InvalidateRect(h, NULL, FALSE); return 0;
+    case WM_LBUTTONDOWN: {
+        POINT p = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) }; RECT a, b; mini_rects(&a, &b);
+        if (PtInRect(&a, p)) cap_do_pause(); else if (PtInRect(&b, p)) cap_do_stop();
+        InvalidateRect(h, NULL, FALSE); return 0; }
+    case WM_TIMER: InvalidateRect(h, NULL, FALSE); return 0;
+    }
+    return DefWindowProc(h, m, wp, lp);
+}
+static void mini_show(void) {
+    static int reg = 0;
+    if (!reg) { WNDCLASSW wc; memset(&wc, 0, sizeof wc); wc.lpfnWndProc = MiniProc; wc.hInstance = hInst; wc.lpszClassName = L"LavMini"; wc.hCursor = LoadCursor(NULL, IDC_ARROW); RegisterClassW(&wc); reg = 1; }
+    int w = S(MINI_W), h = S(MINI_H);
+    if (!hMini) hMini = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"LavMini", NULL, WS_POPUP | WS_BORDER, 0, 0, w, h, NULL, NULL, hInst, NULL);
+    if (!hMini) return;
+    if (!miniHas) {
+        MONITORINFO mi = { sizeof mi }; HMONITOR mo = MonitorFromWindow(hCap ? hCap : hMain, MONITOR_DEFAULTTONEAREST); RECT wa = { 0, 0, 1280, 720 };
+        if (GetMonitorInfo(mo, &mi)) wa = mi.rcWork; miniPos.x = wa.right - w - S(24); miniPos.y = wa.bottom - h - S(24); miniHas = 1;
+    }
+    SetWindowDisplayAffinity(hMini, WDA_EXCLUDEFROMCAPTURE);                      /* absente de l'enregistrement (Windows 10 2004+) */
+    SetWindowPos(hMini, HWND_TOPMOST, miniPos.x, miniPos.y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    SetTimer(hMini, 1, 500, NULL); InvalidateRect(hMini, NULL, FALSE);
+}
+static void mini_hide(void) {
+    if (!hMini) return;
+    RECT r; if (GetWindowRect(hMini, &r)) { miniPos.x = r.left; miniPos.y = r.top; }
+    KillTimer(hMini, 1); ShowWindow(hMini, SW_HIDE);
+}
+static void cap_apply_size(void) {                 /* fenetre complete, ou masquee au profit de la mini fenetre de controle pendant l'enregistrement */
+    if (!hCap) return;
+    if (capRunning || capPaused) { ShowWindow(hCap, SW_HIDE); mini_show(); return; }
+    mini_hide();
+    if (capCloseAfter || capQuit) return;
+    RECT r = { 0, 0, S(CAP_W), S(CAP_H) }; AdjustWindowRectEx(&r, (DWORD)GetWindowLongPtr(hCap, GWL_STYLE), FALSE, 0);
     RECT wr; GetWindowRect(hCap, &wr); int w = r.right - r.left, h = r.bottom - r.top, x = wr.left, y = wr.top;
     MONITORINFO mi = { sizeof mi }; if (GetMonitorInfo(MonitorFromWindow(hCap, MONITOR_DEFAULTTONEAREST), &mi)) {
         if (x + w > mi.rcWork.right) x = mi.rcWork.right - w; if (y + h > mi.rcWork.bottom) y = mi.rcWork.bottom - h;
         if (x < mi.rcWork.left) x = mi.rcWork.left; if (y < mi.rcWork.top) y = mi.rcWork.top; }
-    SetWindowPos(hCap, comp ? HWND_TOPMOST : HWND_NOTOPMOST, x, y, w, h, SWP_NOACTIVATE);
-    InvalidateRect(hCap, NULL, FALSE);
+    SetWindowPos(hCap, HWND_NOTOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    ShowWindow(hCap, SW_SHOWNORMAL); SetForegroundWindow(hCap); InvalidateRect(hCap, NULL, FALSE);
 }
+
 static const struct { const wchar_t *name; int lo, hi, step, inv; } SLD[4] = {
     { L"Qualité vidéo (x265)", 18, 34, 1, 1 }, { L"Images par seconde", 10, 60, 5, 0 },
     { L"Qualité audio (AAC)", 64, 320, 16, 0 }, { L"Vitesse d'encodage", 0, 3, 1, 0 } };
@@ -2854,7 +2927,7 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case R_OUT: case R_BROWSE: cap_browse(); break;
         case R_DESK: desktop_dir(cc.outdir); cap_save(); break;
         case R_REC: if (capPaused) cap_finalize(NULL); else if (!capRunning) cap_start(); else cap_stop(); break;
-        case R_PAUSE: if (capPaused) cap_start(); else if (capRunning && !capStopping && !capPausing) { capPausing = 1; cap_stop(); cap_set_status(L"Mise en pause…", C_ACC); } break;
+        case R_PAUSE: cap_do_pause(); break;
         case R_OPEN: { wchar_t a[MAX_PATH + 20]; _snwprintf(a, MAX_PATH + 19, L"/select,\"%s\"", capLast); a[MAX_PATH + 19] = 0; ShellExecuteW(NULL, L"open", L"explorer.exe", a, NULL, SW_SHOWNORMAL); } break;
         case R_PLAY: if (mpv) { load_file(capLast); ShowWindow(hMain, SW_RESTORE); SetForegroundWindow(hMain); } break;
         case R_CLOSE: SendMessage(h, WM_CLOSE, 0, 0); return 0;
@@ -2875,7 +2948,7 @@ static LRESULT CALLBACK CapProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         if (capRunning) { capCloseAfter = 1; capPausing = 0; cap_stop(); return 0; }
         if (capPaused) cap_finalize(NULL);
         DestroyWindow(h); return 0;
-    case WM_DESTROY: if (!capQuit) cam_preview_stop(); hCap = NULL; return 0;
+    case WM_DESTROY: if (!capQuit) cam_preview_stop(); if (hMini) { DestroyWindow(hMini); hMini = NULL; } hCap = NULL; return 0;
     }
     return DefWindowProc(h, m, wp, lp);
 }
