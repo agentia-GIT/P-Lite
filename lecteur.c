@@ -89,7 +89,7 @@ typedef struct { int id; wchar_t label[256]; int selected; } Trk;
 static Trk aud[64], sub[64];
 static int nAud, nSub, lastCount = -1;
 
-static RECT rGear, rCam, rIptv, rIptvCfg, rLang, rCat, rChan, rSeek, rVol, rOpen, rPlay, rStop, rFs, rTog, rAud, rSub, rTime;
+static RECT rVid, rGear, rCam, rIptv, rIptvCfg, rLang, rCat, rChan, rSeek, rVol, rOpen, rPlay, rStop, rFs, rTog, rAud, rSub, rTime;
 enum { H_NONE, H_SEEK, H_VOL, H_OPEN, H_PLAY, H_STOP, H_FS, H_TOG, H_AUD, H_SUB, H_GEAR, H_CAM, H_IPTV, H_IPTVCFG, H_LANG, H_CAT, H_CHAN };
 
 static void inval(void);
@@ -130,8 +130,13 @@ static void app(wchar_t *d, const wchar_t *s) {
     wcsncat(d, s, 255 - wcslen(d));
 }
 
+static wchar_t vidLabel[256]; static int needBr;
+static void fmt_br(double bps, wchar_t *o, int n) {            /* debit lisible */
+    if (bps >= 1e6) _snwprintf(o, n - 1, L"%.1f Mb/s", bps / 1e6); else _snwprintf(o, n - 1, L"%d kb/s", (int)(bps / 1000 + 0.5)); o[n - 1] = 0;
+}
+static double live_br(const char *prop) { char *v = p_get_property_string(mpv, prop); double d = v ? atof(v) : 0; if (v) p_free(v); return d; }
 static void refresh_tracks(void) {
-    nAud = nSub = 0;
+    nAud = nSub = 0; vidLabel[0] = 0; needBr = 0;
     char b[512];
     if (!tprop(0, "id", b, sizeof b) && 0) {}
     char *cs = p_get_property_string(mpv, "track-list/count");
@@ -141,7 +146,25 @@ static void refresh_tracks(void) {
         char type[16], id[16], lang[64], title[256], codec[32], ch[16], selc[8];
         tprop(i, "type", type, sizeof type);
         int isA = !strcmp(type, "audio"), isS = !strcmp(type, "sub");
-        if (!strcmp(type, "video")) { char al[8]; tprop(i, "albumart", al, sizeof al); if (strcmp(al, "yes")) realVideo = 1; }
+        if (!strcmp(type, "video")) {
+            char al[8], sc[8]; tprop(i, "albumart", al, sizeof al); tprop(i, "selected", sc, sizeof sc);
+            if (strcmp(al, "yes")) {
+                realVideo = 1;
+                if (!vidLabel[0] && (!strcmp(sc, "yes") || 1)) {                /* piste video : codec, taille, images/s, debit */
+                    char cd[32], dw[16], dh[16], fp[32], br[32]; wchar_t w[64], lab[256] = L"";
+                    tprop(i, "codec", cd, sizeof cd); tprop(i, "demux-w", dw, sizeof dw); tprop(i, "demux-h", dh, sizeof dh);
+                    tprop(i, "demux-fps", fp, sizeof fp); tprop(i, "demux-bitrate", br, sizeof br);
+                    if (cd[0]) { u8w(cd, w, 64); CharUpperW(w); app(lab, w); }
+                    int W = atoi(dw), Hh = atoi(dh);
+                    if (!W || !Hh) { char *a = p_get_property_string(mpv, "video-params/w"), *b = p_get_property_string(mpv, "video-params/h"); W = a ? atoi(a) : 0; Hh = b ? atoi(b) : 0; if (a) p_free(a); if (b) p_free(b); }
+                    if (W && Hh) { _snwprintf(w, 63, L"%dx%d", W, Hh); w[63] = 0; app(lab, w); }
+                    double f = atof(fp); if (f > 1) { if (fabs(f - floor(f + 0.5)) < 0.02) _snwprintf(w, 63, L"%d i/s", (int)(f + 0.5)); else _snwprintf(w, 63, L"%.2f i/s", f); w[63] = 0; app(lab, w); }
+                    double bps = atof(br); if (bps <= 0) bps = live_br("video-bitrate");
+                    if (bps > 0) { fmt_br(bps, w, 64); app(lab, w); } else needBr = 1;
+                    wcsncpy(vidLabel, lab, 255);
+                }
+            }
+        }
         if (!isA && !isS) continue;
         tprop(i, "id", id, sizeof id); tprop(i, "lang", lang, sizeof lang);
         tprop(i, "title", title, sizeof title); tprop(i, "codec", codec, sizeof codec);
@@ -150,13 +173,18 @@ static void refresh_tracks(void) {
         t.id = atoi(id); t.selected = !strcmp(selc, "yes");
         wchar_t w[256], lab[256]; _snwprintf(lab, 255, L"#%d", t.id); lab[255] = 0;
         if (lang[0]) { u8w(lang, w, 256); app(lab, w); }
-        if (title[0]) { u8w(title, w, 256); app(lab, w); }
         if (codec[0]) { u8w(codec, w, 256); CharUpperW(w); app(lab, w); }
         if (isA && ch[0]) {
             int c = atoi(ch);
             const wchar_t *s = c == 1 ? L"mono" : c == 2 ? L"2.0" : c == 6 ? L"5.1" : c == 8 ? L"7.1" : NULL;
             if (s) app(lab, s); else { _snwprintf(w, 255, L"%dch", c); w[255] = 0; app(lab, w); }
         }
+        if (isA) {                                                   /* debit audio */
+            char br[32]; tprop(i, "demux-bitrate", br, sizeof br); double bps = atof(br);
+            if (bps <= 0 && t.selected) bps = live_br("audio-bitrate");
+            if (bps > 0) { fmt_br(bps, w, 64); app(lab, w); } else if (t.selected) needBr = 1;
+        }
+        if (title[0]) { u8w(title, w, 256); app(lab, w); }
         wcsncpy(t.label, lab, 255);
         if (isA && nAud < 64) aud[nAud++] = t;
         if (isS && nSub < 64) sub[nSub++] = t;
@@ -188,8 +216,8 @@ static void do_layout(void) {
 
 static void calc_rects(int w) {
     int th = tracksVisible ? S(34) : 0, y0 = th, by = y0 + S(26), bs = S(34);
-    SetRect(&rAud, S(10), S(5), w / 2 - S(6), S(29));
-    SetRect(&rSub, w / 2 + S(6), S(5), w - S(10), S(29));
+    { int g = S(6), cw = (w - 2 * S(10) - 2 * g) / 3;                 /* VIDEO | AUDIO | SOUS-TITRES */
+      SetRect(&rVid, S(10), S(5), S(10) + cw, S(29)); SetRect(&rAud, rVid.right + g, S(5), rVid.right + g + cw, S(29)); SetRect(&rSub, rAud.right + g, S(5), w - S(10), S(29)); }
     SetRect(&rSeek, S(12), y0 + S(6), w - S(12), y0 + S(22));
     SetRect(&rOpen, S(6), by, S(6) + bs, by + bs);
     SetRect(&rPlay, rOpen.right + S(2), by, rOpen.right + S(2) + bs, by + bs);
@@ -264,6 +292,8 @@ static void paint_panel(HDC dc, int w, int h) {
         const wchar_t *a = L"—", *s = L"Désactivés";
         for (int i = 0; i < nAud; i++) if (aud[i].selected) a = aud[i].label;
         for (int i = 0; i < nSub; i++) if (sub[i].selected) s = sub[i].label;
+        { fill(dc, &rVid, C_HOT); RECT t = rVid; t.left += S(8); text(dc, L"VIDÉO", &t, C_DIM, fSmall, DT_LEFT);
+          t = rVid; t.left += S(8) + S(48); t.right -= S(8); text(dc, vidLabel[0] ? vidLabel : L"—", &t, C_FG, fUI, DT_LEFT | DT_END_ELLIPSIS); }
         chip(dc, &rAud, L"AUDIO", S(52), a, H_AUD);
         chip(dc, &rSub, L"SOUS-TITRES", S(86), s, H_SUB);
     }
@@ -1468,7 +1498,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.15"
+#define LAV_VERSION L"1.16"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -2424,7 +2454,7 @@ static void cam_play(const char *url, const char *lavf, const wchar_t *title) { 
 }
 static void cam_preview_stop(void) {
     if (!camPrev) return;
-    camPrev = 0; cmd("stop", NULL, NULL, NULL); playing = 0; viz_update(1); do_layout(); gPos = gDur = -1; nAud = nSub = 0;
+    camPrev = 0; cmd("stop", NULL, NULL, NULL); playing = 0; viz_update(1); do_layout(); gPos = gDur = -1; nAud = nSub = 0; vidLabel[0] = 0;
     InvalidateRect(hVideo, NULL, TRUE); SetWindowTextW(hMain, L"Lecteur A/V");
 }
 static void cam_preview_start(int status) {              /* apercu direct de la camera (DirectShow) dans la fenetre du lecteur */
@@ -3427,7 +3457,7 @@ static LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case H_VOL: dragVol = 1; SetCapture(h); set_vol_x(x); InvalidateRect(h, NULL, FALSE); break;
         case H_OPEN: open_dialog(); break;
         case H_PLAY: toggle_pause(); break;
-        case H_STOP: cmd("stop", NULL, NULL, NULL); camPrev = 0; playing = 0; viz_update(1); do_layout(); gPos = gDur = -1; nAud = nSub = 0; InvalidateRect(hVideo, NULL, TRUE); InvalidateRect(h, NULL, FALSE); break;
+        case H_STOP: cmd("stop", NULL, NULL, NULL); camPrev = 0; playing = 0; viz_update(1); do_layout(); gPos = gDur = -1; nAud = nSub = 0; vidLabel[0] = 0; InvalidateRect(hVideo, NULL, TRUE); InvalidateRect(h, NULL, FALSE); break;
         case H_FS: toggle_fs(); break;
         case H_TOG: toggle_tracks(); break;
         case H_AUD: pick_menu(1); break;
@@ -3500,7 +3530,7 @@ static void poll(void) {
     if (p_get_property(mpv, "mute", MPV_FMT_FLAG, &f) == 0) gMute = f;
     if (playing) {
         char *c = p_get_property_string(mpv, "track-list/count"); int n = c ? atoi(c) : 0; if (c) p_free(c);
-        if (n != lastCount) refresh_tracks();
+        static int brTick, brTries; if (n != lastCount) { brTries = 0; refresh_tracks(); } else if (needBr && brTries < 40 && ++brTick >= 8) { brTick = 0; brTries++; refresh_tracks(); }   /* debits mesurables apres quelques secondes */
     }
     inval();
     POINT p; GetCursorPos(&p);
