@@ -78,7 +78,8 @@ static int fullscreen = 0, tracksVisible = 1, barsShown = 1, menuOpen = 0, playi
 static WINDOWPLACEMENT wpPrev = { sizeof(WINDOWPLACEMENT) };
 static double gPos = -1, gDur = -1, gVol = 100;
 static int gPause = 0, gMute = 0;
-static int dragSeek = 0, dragVol = 0, hover = 0;
+static int dragSeek = 0, dragVol = 0, hover = 0, dragImg = -1, imgV[4];       /* reglages image : luminosite, contraste, saturation, teinte (-100..100) */
+static RECT rImgG[4], rImgS[4], rImgR;
 static double seekFrac = 0;
 static POINT lastPt; static DWORD lastMove;
 static volatile int capRunning;
@@ -90,7 +91,7 @@ static Trk aud[64], sub[64];
 static int nAud, nSub, lastCount = -1;
 
 static RECT rVid, rGear, rCam, rIptv, rIptvCfg, rLang, rCat, rChan, rSeek, rVol, rOpen, rPlay, rStop, rFs, rTog, rAud, rSub, rTime;
-enum { H_NONE, H_SEEK, H_VOL, H_OPEN, H_PLAY, H_STOP, H_FS, H_TOG, H_AUD, H_SUB, H_GEAR, H_CAM, H_IPTV, H_IPTVCFG, H_LANG, H_CAT, H_CHAN };
+enum { H_NONE, H_SEEK, H_VOL, H_OPEN, H_PLAY, H_STOP, H_FS, H_TOG, H_AUD, H_SUB, H_GEAR, H_CAM, H_IPTV, H_IPTVCFG, H_LANG, H_CAT, H_CHAN, H_IMG0, H_IMG1, H_IMG2, H_IMG3, H_IMGRST };
 
 static void inval(void);
 static void iptv_menu(void), iptv_cfg_menu(void), lang_menu(void), cat_menu(void), chan_menu(void), manage_window(void), settings_window(void);
@@ -194,7 +195,7 @@ static void refresh_tracks(void) {
 }
 
 /* ---------- mise en page ---------- */
-static int panel_height(void) { return (tracksVisible ? S(34) : 0) + S(64); }
+static int panel_height(void) { return (tracksVisible ? S(62) : 0) + S(64); }
 
 static void place_viz(int w, int h) { if (hViz) SetWindowPos(hViz, HWND_TOP, 0, 0, w, h, SWP_NOACTIVATE | ((vizOn || !playing) ? SWP_SHOWWINDOW : SWP_HIDEWINDOW)); }
 static void do_layout(void) {
@@ -215,7 +216,10 @@ static void do_layout(void) {
 }
 
 static void calc_rects(int w) {
-    int th = tracksVisible ? S(34) : 0, y0 = th, by = y0 + S(26), bs = S(34);
+    int th = tracksVisible ? S(62) : 0, y0 = th, by = y0 + S(26), bs = S(34);
+    { int ry0 = S(34), ry1 = S(62), gp = S(14), rw = S(26), gw = (w - 2 * S(10) - rw - 4 * gp) / 4, lw = gw >= S(215) ? S(84) : S(44);
+      for (int k = 0; k < 4; k++) { SetRect(&rImgG[k], S(10) + k * (gw + gp), ry0, S(10) + k * (gw + gp) + gw, ry1); SetRect(&rImgS[k], rImgG[k].left + lw, ry0 + S(5), rImgG[k].right - S(34), ry1 - S(5)); }
+      SetRect(&rImgR, w - S(10) - rw, ry0 + S(3), w - S(10), ry1 - S(3)); }
     { int g = S(6), cw = (w - 2 * S(10) - 2 * g) / 3;                 /* VIDEO | AUDIO | SOUS-TITRES */
       SetRect(&rVid, S(10), S(5), S(10) + cw, S(29)); SetRect(&rAud, rVid.right + g, S(5), rVid.right + g + cw, S(29)); SetRect(&rSub, rAud.right + g, S(5), w - S(10), S(29)); }
     SetRect(&rSeek, S(12), y0 + S(6), w - S(12), y0 + S(22));
@@ -289,6 +293,18 @@ static void paint_panel(HDC dc, int w, int h) {
     calc_rects(w);
     if (tracksVisible) {
         RECT sep = { 0, S(33), w, S(34) }; fill(dc, &sep, C_BG);
+        RECT sep2 = { 0, S(61), w, S(62) }; fill(dc, &sep2, C_BG);
+        { static const wchar_t *LF[4] = { L"LUMINOSITÉ", L"CONTRASTE", L"SATURATION", L"TEINTE" }, *LS[4] = { L"LUM.", L"CONT.", L"SAT.", L"TEINTE" };
+          for (int k = 0; k < 4; k++) {
+              RECT g = rImgG[k], t = g; t.right = rImgS[k].left - S(4); text(dc, (rImgS[k].left - g.left) > S(60) ? LF[k] : LS[k], &t, C_DIM, fSmall, DT_LEFT);
+              RECT sl = rImgS[k]; int cy = (sl.top + sl.bottom) / 2, cx = (sl.left + sl.right) / 2, x = sl.left + (int)((sl.right - sl.left) * (imgV[k] + 100) / 200.0);
+              frect(dc, sl.left, cy - 1, sl.right, cy + 2, C_TROU); frect(dc, cx - 1, cy - S(4), cx + 1, cy + S(5), C_DIM);                 /* repere du zero */
+              if (x >= cx) frect(dc, cx, cy - 1, x, cy + 2, C_ACC); else frect(dc, x, cy - 1, cx, cy + 2, C_ACC);
+              SetDCBrushColor(dc, hover == H_IMG0 + k || dragImg == k ? C_ACC : C_FG); SelectObject(dc, GetStockObject(DC_BRUSH)); SelectObject(dc, GetStockObject(NULL_PEN));
+              Ellipse(dc, x - S(5), cy - S(5), x + S(5), cy + S(5));
+              wchar_t v[12]; _snwprintf(v, 11, imgV[k] > 0 ? L"+%d" : L"%d", imgV[k]); v[11] = 0; RECT vr = { sl.right + S(4), g.top, g.right, g.bottom }; text(dc, v, &vr, imgV[k] ? C_FG : C_DIM, fSmall, DT_RIGHT);
+          }
+          fill(dc, &rImgR, hover == H_IMGRST ? C_TROU : C_HOT); text(dc, L"↺", &rImgR, C_ACC, fUI, DT_CENTER); }
         const wchar_t *a = L"—", *s = L"Désactivés";
         for (int i = 0; i < nAud; i++) if (aud[i].selected) a = aud[i].label;
         for (int i = 0; i < nSub; i++) if (sub[i].selected) s = sub[i].label;
@@ -367,6 +383,10 @@ static int hit(int x, int y) {
     POINT p = { x, y };
     if (tracksVisible && PtInRect(&rAud, p)) return H_AUD;
     if (tracksVisible && PtInRect(&rSub, p)) return H_SUB;
+    if (tracksVisible) {
+        if (PtInRect(&rImgR, p)) return H_IMGRST;
+        for (int k = 0; k < 4; k++) { RECT r = rImgS[k]; r.left -= S(6); r.right += S(6); r.top -= S(4); r.bottom += S(4); if (PtInRect(&r, p)) return H_IMG0 + k; }
+    }
     RECT sk = rSeek; sk.top -= S(4); sk.bottom += S(4);
     if (PtInRect(&sk, p)) return H_SEEK;
     RECT v = rVol; v.top -= S(6); v.bottom += S(6);
@@ -438,6 +458,14 @@ static void pick_menu(int audio) {
     SetFocus(hMain);
 }
 
+static const char *IMGP[4] = { "brightness", "contrast", "saturation", "hue" };
+static void img_apply(int k) { char v[16]; snprintf(v, sizeof v, "%d", imgV[k]); p_set_property_string(mpv, IMGP[k], v); }
+static void set_img_x(int k, int x) {
+    double f = (double)(x - rImgS[k].left) / (rImgS[k].right - rImgS[k].left); if (f < 0) f = 0; if (f > 1) f = 1;
+    int v = (int)(f * 200 + 0.5) - 100; if (v > -4 && v < 4) v = 0;                /* aimant sur 0 */
+    if (v != imgV[k]) { imgV[k] = v; img_apply(k); }
+}
+static void img_reset(int k) { imgV[k] = 0; img_apply(k); }
 static void set_vol_x(int x) {
     double f = (double)(x - rVol.left) / (rVol.right - rVol.left);
     if (f < 0) f = 0; if (f > 1) f = 1;
@@ -1498,7 +1526,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.16"
+#define LAV_VERSION L"1.17"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -3444,6 +3472,7 @@ static LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
         if (dragSeek) { set_seek_x(x); InvalidateRect(h, NULL, FALSE); }
         else if (dragVol) { set_vol_x(x); InvalidateRect(h, NULL, FALSE); }
+        else if (dragImg >= 0) { set_img_x(dragImg, x); InvalidateRect(h, NULL, FALSE); }
         else { int nh = hit(x, y); if (nh == H_SEEK || nh == H_VOL) nh = 0;
                if (nh != hover) { hover = nh; InvalidateRect(h, NULL, FALSE); }
                TRACKMOUSEEVENT t = { sizeof t, TME_LEAVE, h, 0 }; TrackMouseEvent(&t); }
@@ -3455,6 +3484,8 @@ static LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         switch (t) {
         case H_SEEK: if (gDur > 0) { dragSeek = 1; SetCapture(h); set_seek_x(x); InvalidateRect(h, NULL, FALSE); } break;
         case H_VOL: dragVol = 1; SetCapture(h); set_vol_x(x); InvalidateRect(h, NULL, FALSE); break;
+        case H_IMG0: case H_IMG1: case H_IMG2: case H_IMG3: dragImg = t - H_IMG0; SetCapture(h); set_img_x(dragImg, x); InvalidateRect(h, NULL, FALSE); break;
+        case H_IMGRST: for (int k = 0; k < 4; k++) img_reset(k); InvalidateRect(h, NULL, FALSE); break;
         case H_OPEN: open_dialog(); break;
         case H_PLAY: toggle_pause(); break;
         case H_STOP: cmd("stop", NULL, NULL, NULL); camPrev = 0; playing = 0; viz_update(1); do_layout(); gPos = gDur = -1; nAud = nSub = 0; vidLabel[0] = 0; InvalidateRect(hVideo, NULL, TRUE); InvalidateRect(h, NULL, FALSE); break;
@@ -3477,7 +3508,9 @@ static LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             cmd("seek", v, "absolute-percent", NULL); gPos = seekFrac * gDur;
         }
         if (dragVol) { ReleaseCapture(); dragVol = 0; }
+        if (dragImg >= 0) { ReleaseCapture(); dragImg = -1; }
         InvalidateRect(h, NULL, FALSE); return 0;
+    case WM_RBUTTONDOWN: { int t = hit(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); if (t >= H_IMG0 && t <= H_IMG3) { img_reset(t - H_IMG0); InvalidateRect(h, NULL, FALSE); } return 0; }       /* clic droit : remet ce reglage a 0 */
     }
     return DefWindowProc(h, m, wp, lp);
 }
