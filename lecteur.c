@@ -1526,7 +1526,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.20"
+#define LAV_VERSION L"1.21"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -2538,17 +2538,17 @@ static void cap_start(void) {
     static const wchar_t *PRE[4] = { L"ultrafast", L"superfast", L"veryfast", L"faster" };
     if (cc.mode == CM_CAMERA && camPrev) { cam_preview_stop(); Sleep(400); }     /* la camera DirectShow ne peut pas etre ouverte deux fois : on libere l'apercu direct */
     if (useAudio) {
-        _snwprintf(ain, 419, L"-thread_queue_size 1024 -f %s -ar %d -ac %d -i %s ", aInfo.fmt, aInfo.rate, aInfo.ch, capPipeName); ain[419] = 0;
+        _snwprintf(ain, 419, L"-f %s -ar %d -ac %d -i %s ", aInfo.fmt, aInfo.rate, aInfo.ch, capPipeName); ain[419] = 0;
         _snwprintf(aout, 119, L"-c:a aac -b:a %dk -ac 2 -ar 48000 ", cc.abr); aout[119] = 0;
     }
     ff_path(ffp); ff_dpi_shim(ffp);
     wchar_t vin[1500], vf[80] = L"";
     if (cc.mode == CM_CAMERA) {
         wcscpy(vf, L"-vf scale=trunc(iw/2)*2:trunc(ih/2)*2 ");                                 /* dimensions paires pour yuv420p */
-        _snwprintf(vin, 1499, L"-thread_queue_size 1024 -f dshow -rtbufsize 256M -framerate %d %s%s%s-i video=\"%s\" ", cc.fps,
+        _snwprintf(vin, 1499, L"-f dshow -rtbufsize 256M -framerate %d %s%s%s-i video=\"%s\" ", cc.fps,
                    camSize ? L"-video_size " : L"", camSize ? CAM_SZ[camSize] : L"", camSize ? L" " : L"", camDev);
     } else
-        _snwprintf(vin, 1499, L"-thread_queue_size 1024 -f gdigrab -framerate %d -draw_mouse %d -offset_x %d -offset_y %d -video_size %dx%d -rtbufsize 256M -i desktop ",
+        _snwprintf(vin, 1499, L"-f gdigrab -framerate %d -draw_mouse %d -offset_x %d -offset_y %d -video_size %dx%d -rtbufsize 256M -i desktop ",
                    cc.fps, cc.cursor ? 1 : 0, (int)rg.left, (int)rg.top, (int)(rg.right - rg.left), (int)(rg.bottom - rg.top));
     vin[1499] = 0;
     wchar_t pv[400] = L"";
