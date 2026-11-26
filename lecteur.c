@@ -1526,7 +1526,7 @@ static void manage_window(void) {
 
 
 /* ================= parametres : versions et mise a jour ================= */
-#define LAV_VERSION L"1.21"
+#define LAV_VERSION L"1.22"
 #define WM_SET_ONLINE (WM_APP + 10)
 #define WM_SET_UPD    (WM_APP + 11)
 static HWND hSet, hsVal[5], hsStatus, hsUpd, hsRestart;
@@ -1976,11 +1976,17 @@ static void default_lists_once(void) {                                  /* liste
 }
 static DWORD WINAPI app_check_thread(LPVOID p) {                       /* verification au demarrage */
     (void)p; wchar_t v[32], ref[32] = L"", ip[MAX_PATH];
-    default_lists_once();
-    if (app_remote_version(v) && ver_cmp(LAV_VERSION, v) < 0) {
-        app_ini(ip); GetPrivateProfileStringW(L"capture", L"maj_refus", L"", ref, 32, ip);
-        if (wcscmp(ref, v)) { wcscpy(gNewVer, v); PostMessage(hMain, WM_LAV_NEWVER, 0, 0); }
+    for (int i = 0; i < 3; i++) {                                       /* version d'abord (avant les telechargements de listes), 3 essais */
+        if (app_remote_version(v)) {
+            if (ver_cmp(LAV_VERSION, v) < 0) {
+                app_ini(ip); GetPrivateProfileStringW(L"capture", L"maj_refus", L"", ref, 32, ip);
+                if (wcscmp(ref, v)) { wcscpy(gNewVer, v); PostMessage(hMain, WM_LAV_NEWVER, 0, 0); }
+            }
+            break;
+        }
+        Sleep(3000);
     }
+    default_lists_once();
     return 0;
 }
 
